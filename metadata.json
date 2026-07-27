@@ -1,0 +1,6 @@
+{
+  "name": "Local AI Media Gateway & Control Hub",
+  "description": "Hybrid Cloud-to-Local AI media generation platform connecting Google AI Studio Function Calling to local RTX 3060 Ti ComfyUI instance with encrypted storage and real-time streaming.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

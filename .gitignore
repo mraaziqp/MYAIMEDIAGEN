@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Local runtime data - contains plaintext auth token, encryption secret,
+# the SQLite generation vault, and generated media. Never commit real secrets/data.
+.data/
+
+# Stale full-project export snapshot, not source of truth
+*.zip
