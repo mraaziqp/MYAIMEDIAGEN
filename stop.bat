@@ -7,8 +7,9 @@ echo   STOPPING LOCAL AI MEDIA GATEWAY
 echo ========================================================
 echo.
 
-taskkill /FI "WINDOWTITLE eq AI Gateway Server*" /F >nul 2>&1
-taskkill /FI "WINDOWTITLE eq Cloudflare Tunnel*" /F >nul 2>&1
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3000" ^| findstr "LISTENING"') do (
+  taskkill /F /PID %%P >nul 2>&1
+)
 taskkill /IM cloudflared.exe /F >nul 2>&1
 
 echo Done! All gateway processes stopped.
