@@ -11,6 +11,10 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
+        // The gateway is normally run via `npm run dev` (see start.bat), not a production
+        // build - without this, the manifest/service worker are only injected on `vite
+        // build`, so "Install app" would never actually show up in day-to-day use.
+        devOptions: { enabled: true, type: 'module' },
         includeAssets: ['icons/favicon-16.png', 'icons/favicon-32.png', 'icons/apple-touch-icon.png'],
         manifest: {
           name: 'Local AI Media Gateway',
