@@ -1,0 +1,55 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="chipGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#d946ef" />
+    </linearGradient>
+    <radialGradient id="glowGradient" cx="50%" cy="42%" r="60%">
+      <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.55" />
+      <stop offset="55%" stop-color="#818cf8" stop-opacity="0.22" />
+      <stop offset="100%" stop-color="#020617" stop-opacity="0" />
+    </radialGradient>
+    <filter id="softBlur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="18" />
+    </filter>
+    <filter id="boltShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#0891b2" flood-opacity="0.55" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="#020617" />
+  <circle cx="256" cy="220" r="230" fill="url(#glowGradient)" filter="url(#softBlur)" />
+
+  <!-- Chip pins -->
+  <g fill="url(#chipGradient)" opacity="0.9">
+    <rect x="196" y="130" width="16" height="34" rx="4" />
+    <rect x="248" y="130" width="16" height="34" rx="4" />
+    <rect x="300" y="130" width="16" height="34" rx="4" />
+
+    <rect x="196" y="348" width="16" height="34" rx="4" />
+    <rect x="248" y="348" width="16" height="34" rx="4" />
+    <rect x="300" y="348" width="16" height="34" rx="4" />
+
+    <rect x="130" y="196" width="34" height="16" rx="4" />
+    <rect x="130" y="248" width="34" height="16" rx="4" />
+    <rect x="130" y="300" width="34" height="16" rx="4" />
+
+    <rect x="348" y="196" width="34" height="16" rx="4" />
+    <rect x="348" y="248" width="34" height="16" rx="4" />
+    <rect x="348" y="300" width="34" height="16" rx="4" />
+  </g>
+
+  <!-- Chip body -->
+  <rect x="164" y="164" width="184" height="184" rx="34" fill="url(#chipGradient)" />
+  <rect x="164" y="164" width="184" height="184" rx="34" fill="#020617" opacity="0.14" />
+  <rect x="180" y="180" width="152" height="152" rx="24" fill="none" stroke="#f8fafc" stroke-opacity="0.25" stroke-width="2" />
+
+  <!-- Spark / bolt -->
+  <path
+    d="M 274 194 L 214 268 L 246 268 L 238 322 L 300 244 L 264 244 Z"
+    fill="#f8fafc"
+    filter="url(#boltShadow)"
+  />
+</svg>

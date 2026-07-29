@@ -2,10 +2,38 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
+import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      VitePWA({
+        registerType: 'autoUpdate',
+        includeAssets: ['icons/favicon-16.png', 'icons/favicon-32.png', 'icons/apple-touch-icon.png'],
+        manifest: {
+          name: 'Local AI Media Gateway',
+          short_name: 'AI Gateway',
+          description: 'Local ComfyUI media generation gateway and control hub for the RTX 3060 Ti.',
+          start_url: '/',
+          scope: '/',
+          display: 'standalone',
+          theme_color: '#020617',
+          background_color: '#020617',
+          icons: [
+            { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+            { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+            { src: 'icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          ],
+        },
+        workbox: {
+          // Real-time API routes (VRAM telemetry, generation status, SSE progress) must
+          // never be intercepted or cached - only the app shell is precached.
+          navigateFallbackDenylist: [/^\/api/],
+        },
+      }),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
