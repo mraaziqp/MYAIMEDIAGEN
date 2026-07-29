@@ -73,6 +73,40 @@ function migrateLegacyJsonStore() {
 
 migrateLegacyJsonStore();
 
+/**
+ * Any record still 'processing' at startup was orphaned by an unclean shutdown/restart -
+ * the in-memory job tracking and WebSocket connection that would have resolved it no longer
+ * exist, so it would otherwise sit showing "processing" forever. Mark it failed instead.
+ */
+function reconcileOrphanedJobs() {
+  const orphaned = db.select().from(generations).where(eq(generations.status, 'processing')).all();
+  if (orphaned.length === 0) return;
+
+  for (const rec of orphaned) {
+    let existingMeta: Record<string, any> = {};
+    try {
+      existingMeta = rec.metadataJson ? JSON.parse(rec.metadataJson) : {};
+    } catch {}
+
+    db.update(generations)
+      .set({
+        status: 'failed',
+        metadataJson: JSON.stringify({
+          ...existingMeta,
+          failureReason: 'orphaned_by_restart',
+          errorMessage: 'The gateway restarted or crashed while this job was in progress; no completion event was ever received.',
+          failedAt: new Date().toISOString(),
+        }),
+      })
+      .where(eq(generations.id, rec.id))
+      .run();
+  }
+
+  console.log(`[Store] Reconciled ${orphaned.length} orphaned 'processing' record(s) to 'failed' on startup.`);
+}
+
+reconcileOrphanedJobs();
+
 let currentSettings: GatewaySettings = {
   comfyUrl: process.env.COMFYUI_URL || 'http://127.0.0.1:8188',
   authToken: process.env.GATEWAY_AUTH_TOKEN || 'sec_rtx3060ti_gateway_key_9988',
