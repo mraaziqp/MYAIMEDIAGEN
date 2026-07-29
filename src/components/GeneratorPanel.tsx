@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert } from 'lucide-react';
+import React, { useState, useRef, useEffect } from 'react';
+import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2 } from 'lucide-react';
 import { MediaType, AspectRatio, WorkflowParams, SystemStats } from '../types';
 
 interface GeneratorPanelProps {
@@ -48,8 +48,52 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   const [seed, setSeed] = useState<number>(Math.floor(Math.random() * 900000) + 100000);
   const [customSteps, setCustomSteps] = useState<number | ''>('');
 
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [uploadedFilename, setUploadedFilename] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Revoke the local preview blob URL whenever it's replaced or the component unmounts -
+  // otherwise each new image leaks the previous one for the life of the tab.
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
   const handleRandomizeSeed = () => {
     setSeed(Math.floor(Math.random() * 900000) + 100000);
+  };
+
+  const handleFileSelect = async (file: File | undefined) => {
+    if (!file) return;
+    setUploadError(null);
+    setUploadedFilename(null);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(URL.createObjectURL(file));
+    setIsUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append('image', file);
+      const res = await fetch('/api/upload-image', { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      setUploadedFilename(data.filename);
+    } catch (err: any) {
+      setUploadError(err?.message || 'Failed to upload image');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleRemoveImage = () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    setUploadedFilename(null);
+    setUploadError(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handlePresetSelect = (preset: (typeof PRESET_PROMPTS)[0]) => {
@@ -65,9 +109,15 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   const requiredVramMb = mediaType === 'video_short' ? 6500 : mediaType === 'image_hd' ? 5200 : 3800;
   const freeVramMb = stats?.vramFreeMb ?? 0;
 
+  // SVD is image-to-video - there is no text-to-video path, so a reference image isn't
+  // optional for this model the way it is (as an img2img nudge) for Flux/SDXL.
+  const needsReferenceImage = mediaType === 'video_short';
+  const referenceImageMissing = needsReferenceImage && !uploadedFilename;
+
   const gpuUnavailable = !stats;
   const vramCritical = !!stats && freeVramMb < requiredVramMb;
-  const submitBlocked = isGenerating || !prompt.trim() || gpuUnavailable || vramCritical;
+  const submitBlocked =
+    isGenerating || !prompt.trim() || gpuUnavailable || vramCritical || isUploading || referenceImageMissing;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -79,6 +129,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
       aspectRatio,
       seed: Number(seed),
       steps: customSteps ? Number(customSteps) : undefined,
+      referenceImage: uploadedFilename || undefined,
     });
   };
 
@@ -196,7 +247,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
                   ~8.5s
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400">16-Frame Fluid Video Render (832x480 Optimized)</p>
+              <p className="text-[11px] text-slate-400">16-Frame Fluid Video Render (832x480 Optimized) - requires a reference image below</p>
             </button>
 
           </div>
@@ -214,6 +265,63 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
             placeholder="Describe the visual scene in vivid detail..."
             className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-sans resize-none"
           />
+        </div>
+
+        {/* Reference Image Upload */}
+        <div>
+          <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block mb-2">
+            Reference Image {needsReferenceImage ? <span className="text-rose-400">(Required for Video)</span> : <span className="text-slate-500 normal-case font-normal">(optional - enables image-to-image)</span>}
+          </label>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => handleFileSelect(e.target.files?.[0])}
+          />
+
+          {previewUrl ? (
+            <div className="flex items-center space-x-3 p-3 bg-slate-950 border border-slate-800 rounded-xl">
+              <img src={previewUrl} alt="Reference preview" className="w-16 h-16 object-cover rounded-lg border border-slate-800" />
+              <div className="flex-1 min-w-0">
+                {isUploading ? (
+                  <span className="text-xs text-cyan-300 flex items-center space-x-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Uploading to ComfyUI...</span>
+                  </span>
+                ) : uploadedFilename ? (
+                  <span className="text-xs text-emerald-400 flex items-center space-x-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span className="truncate">{uploadedFilename}</span>
+                  </span>
+                ) : (
+                  <span className="text-xs text-rose-400">{uploadError || 'Upload failed'}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleRemoveImage}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors shrink-0"
+                title="Remove image"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className={`w-full py-4 rounded-xl border border-dashed flex flex-col items-center justify-center space-y-1.5 transition-all ${
+                needsReferenceImage
+                  ? 'border-rose-800/60 bg-rose-950/20 hover:border-rose-600 text-rose-300'
+                  : 'border-slate-800 bg-slate-950/60 hover:border-cyan-500/50 text-slate-400'
+              }`}
+            >
+              <ImagePlus className="w-5 h-5" />
+              <span className="text-xs font-medium">Click to upload a reference image</span>
+            </button>
+          )}
         </div>
 
         {/* Controls Row: Aspect Ratio & Seed */}
@@ -280,6 +388,13 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
           </div>
         )}
 
+        {referenceImageMissing && !gpuUnavailable && !vramCritical && (
+          <div className="flex items-center space-x-2 p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs">
+            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>Quantized SVD is image-to-video - upload a reference image above before rendering.</span>
+          </div>
+        )}
+
         {/* Submit Button */}
         <button
           type="submit"
@@ -299,6 +414,10 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
             <span>GPU Telemetry Unavailable</span>
           ) : vramCritical ? (
             <span>Insufficient VRAM ({freeVramMb} MB Free)</span>
+          ) : isUploading ? (
+            <span>Uploading Reference Image...</span>
+          ) : referenceImageMissing ? (
+            <span>Upload a Reference Image First</span>
           ) : (
             <>
               <Play className="w-4 h-4 fill-current text-white" />

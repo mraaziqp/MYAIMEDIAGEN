@@ -98,6 +98,7 @@ class ComfyService extends EventEmitter {
           comfyPromptId: promptId,
           modelType: mediaTypeKey,
           aspectRatio: params.aspectRatio,
+          referenceImage: params.referenceImage || null,
         }),
       };
 
@@ -204,12 +205,20 @@ class ComfyService extends EventEmitter {
           if (nodeId === null) {
             // Execution finished
           } else {
+            // Node "1" is always the checkpoint/model loader in every workflow we build
+            // (see workflowMapper.ts) - it's by far the slowest node, especially on a cold
+            // load or right after freeing VRAM (can take minutes), so it gets its own honest
+            // status instead of the same flat "20%" every other prep node reports. Without
+            // this, a long model load looks identical to being stuck.
+            const isModelLoad = nodeId === '1';
             this.emitProgress({
               promptId,
               status: 'processing',
               node: `Node_${nodeId}`,
-              nodeTitle: `Executing Node ${nodeId}`,
-              percentage: 20,
+              nodeTitle: isModelLoad
+                ? 'Loading model checkpoint into VRAM - first load or a cold cache can take a few minutes...'
+                : `Preparing Node ${nodeId}`,
+              percentage: isModelLoad ? 5 : 15,
             });
           }
         } else if (msg.type === 'progress') {

@@ -5,6 +5,7 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
+import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 
 import {
@@ -16,6 +17,7 @@ import {
 } from './src/gateway/db/store.js';
 import { comfyService, JobInProgressError, OomGuardrailError } from './src/gateway/comfyService.js';
 import { getSystemStatsInternal, GpuTelemetryError } from './src/gateway/vramMonitor.js';
+import { startQuickTunnel, stopQuickTunnel, getTunnelStatus } from './src/gateway/tunnelManager.js';
 import { buildComfyWorkflow } from './src/gateway/workflowMapper.js';
 import { encryptData, hashData, maskSecret } from './src/gateway/cryptoUtils.js';
 import { WorkflowParams, FunctionCallPayload, MediaType, AspectRatio } from './src/types.js';
@@ -47,7 +49,10 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
     req.path === '/workflow-download' ||
     req.path === '/view' ||
     req.path === '/interrupt' ||
-    req.path === '/free-vram'
+    req.path === '/free-vram' ||
+    req.path === '/upload-image' ||
+    req.path === '/tunnel-status' ||
+    req.path === '/session-token'
   ) {
     return next();
   }
@@ -80,6 +85,39 @@ app.use('/api', authMiddleware);
 // ==========================================
 // API ROUTES
 // ==========================================
+
+/**
+ * GET /api/tunnel-status
+ * Real status of the gateway-managed Cloudflare quick tunnel - a stable public link to
+ * this dashboard that doesn't depend on the local port being directly reachable. The URL
+ * is ephemeral (changes each time the gateway restarts) since quick tunnels have no
+ * persistent identity to configure.
+ */
+app.get('/api/tunnel-status', (req: Request, res: Response) => {
+  res.json(getTunnelStatus());
+});
+
+/**
+ * GET /api/session-token
+ * Lets the dashboard auto-authenticate itself for protected actions (Settings) without the
+ * user ever having to know or paste the token - but ONLY for requests that are genuinely
+ * local. A raw loopback IP check isn't sufficient: the Cloudflare tunnel itself connects to
+ * this server over 127.0.0.1, so a tunneled visitor's request also arrives with ip=127.0.0.1.
+ * Real tunnel traffic is distinguishable by the cf-* headers Cloudflare's edge always injects
+ * (confirmed empirically, not assumed) - their absence means the request reached this server
+ * directly, without going through the public tunnel.
+ */
+app.get('/api/session-token', (req: Request, res: Response) => {
+  const isLoopback = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
+  const cameThroughTunnel = Boolean(req.headers['cf-connecting-ip'] || req.headers['cf-ray']);
+
+  if (!isLoopback || cameThroughTunnel) {
+    return res.status(403).json({ error: 'Session token is only issued to genuinely local requests.' });
+  }
+
+  const settings = getSettings();
+  res.json({ token: settings.authToken });
+});
 
 /**
  * GET /api/system-stats
@@ -139,17 +177,62 @@ app.get('/api/view', async (req: Request, res: Response) => {
   }
 });
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+
+/**
+ * POST /api/upload-image
+ * Proxies a reference image to ComfyUI's real /upload/image endpoint (confirmed against
+ * ComfyUI's own server.py - expects multipart field "image", type "input" so LoadImage
+ * nodes can find it). Returns the ComfyUI-side filename to pass back into /api/generate.
+ */
+app.post('/api/upload-image', upload.single('image'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image file provided (expected multipart field "image")' });
+    }
+
+    const settings = getSettings();
+    const cleanUrl = settings.comfyUrl.replace(/\/$/, '');
+
+    const form = new FormData();
+    form.append('image', new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname);
+    form.append('type', 'input');
+    form.append('overwrite', 'true');
+
+    const comfyRes = await fetch(`${cleanUrl}/upload/image`, { method: 'POST', body: form });
+    if (!comfyRes.ok) {
+      const errText = await comfyRes.text();
+      return res.status(comfyRes.status).json({ error: 'ComfyUI rejected the upload', details: errText });
+    }
+
+    const data = (await comfyRes.json()) as { name: string; subfolder: string; type: string };
+    res.json({ success: true, filename: data.name, subfolder: data.subfolder, type: data.type });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to upload image to ComfyUI', details: err?.message });
+  }
+});
+
 /**
  * POST /api/generate
  * Dynamic workflow selector for image_fast (Flux FP8), image_hd (SDXL FP8), video_short (SVD)
  */
 app.post('/api/generate', async (req: Request, res: Response) => {
   try {
-    const { prompt, media_type, mediaType, aspect_ratio, aspectRatio, seed, steps, cfg, negativePrompt } = req.body;
+    const { prompt, media_type, mediaType, aspect_ratio, aspectRatio, seed, steps, cfg, negativePrompt, referenceImage } =
+      req.body;
 
     const finalPrompt = prompt || 'A futuristic high-tech AI research lab with glowing hologram displays';
     const finalMediaType: MediaType = (media_type || mediaType || 'image_fast') as MediaType;
     const finalAspectRatio: AspectRatio = (aspect_ratio || aspectRatio || '16:9') as AspectRatio;
+
+    // SVD is fundamentally image-to-video, not text-to-video - there is no workflow path
+    // that produces a video without a starting image, so reject early with a clear reason
+    // rather than letting ComfyUI fail on a workflow with no image input.
+    if (finalMediaType === 'video_short' && !referenceImage) {
+      return res.status(400).json({
+        error: 'video_short requires a reference image - upload one first via /api/upload-image, then pass its filename as referenceImage.',
+      });
+    }
 
     const params: WorkflowParams = {
       prompt: finalPrompt,
@@ -159,6 +242,7 @@ app.post('/api/generate', async (req: Request, res: Response) => {
       steps: steps ? Number(steps) : undefined,
       cfg: cfg ? Number(cfg) : undefined,
       negativePrompt,
+      referenceImage: referenceImage || undefined,
     };
 
     const result = await comfyService.queueGeneration(params);
@@ -341,12 +425,20 @@ app.post('/api/ai-studio/function-call', async (req: Request, res: Response) => 
     const payload: FunctionCallPayload = args || req.body;
     const mediaType: MediaType = (payload.media_type || 'image_fast') as MediaType;
     const aspectRatio: AspectRatio = (payload.aspect_ratio || '16:9') as AspectRatio;
+    const referenceImage = payload.reference_image || payload.referenceImage;
+
+    if (mediaType === 'video_short' && !referenceImage) {
+      return res.status(400).json({
+        error: 'video_short requires reference_image - SVD is image-to-video, not text-to-video. Upload an image via /api/upload-image first and pass its filename as reference_image.',
+      });
+    }
 
     const result = await comfyService.queueGeneration({
       prompt: payload.prompt,
       mediaType,
       aspectRatio,
       seed: payload.seed,
+      referenceImage,
     });
 
     res.json({
@@ -382,15 +474,24 @@ app.post('/api/ai-studio/function-call', async (req: Request, res: Response) => 
  * Returns standard workflow_api.json for local ComfyUI drag-and-drop import
  */
 app.get('/api/workflow-download', (req: Request, res: Response) => {
-  const mediaType = (req.query.mediaType as MediaType) || 'image_fast';
-  const aspectRatio = (req.query.aspectRatio as AspectRatio) || '16:9';
-  const prompt = (req.query.prompt as string) || 'Cyberpunk neon city street with reflections';
+  try {
+    const mediaType = (req.query.mediaType as MediaType) || 'image_fast';
+    const aspectRatio = (req.query.aspectRatio as AspectRatio) || '16:9';
+    const prompt = (req.query.prompt as string) || 'Cyberpunk neon city street with reflections';
+    // SVD has no text-to-video path; this is a static JSON export for reference/import, so
+    // illustrate the correct shape with a placeholder rather than erroring on video_short.
+    const referenceImage =
+      (req.query.referenceImage as string) ||
+      (mediaType === 'video_short' ? 'PLACEHOLDER_upload_in_Studio_Generator.png' : undefined);
 
-  const { workflow } = buildComfyWorkflow({ prompt, mediaType, aspectRatio });
+    const { workflow } = buildComfyWorkflow({ prompt, mediaType, aspectRatio, referenceImage });
 
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Content-Disposition', `attachment; filename="workflow_${mediaType}_api.json"`);
-  res.json(workflow);
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="workflow_${mediaType}_api.json"`);
+    res.json(workflow);
+  } catch (err: any) {
+    res.status(400).json({ error: 'Failed to build workflow', details: err?.message });
+  }
 });
 
 // ==========================================
@@ -417,7 +518,17 @@ async function startServer() {
     console.log(`  Local AI Media Gateway running on http://0.0.0.0:${PORT}`);
     console.log(`  RTX 3060 Ti ComfyUI Connector & SSE Controller`);
     console.log(`====================================================`);
+    startQuickTunnel(PORT);
   });
 }
 
 startServer();
+
+process.on('SIGINT', () => {
+  stopQuickTunnel();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  stopQuickTunnel();
+  process.exit(0);
+});

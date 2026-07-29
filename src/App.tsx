@@ -33,10 +33,24 @@ export default function App() {
   const [settingsResponse, setSettingsResponse] = useState<SettingsResponse | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [isFreeingVram, setIsFreeingVram] = useState(false);
-  // The raw bearer token is never sent back by the server (only masked). This tracks the
-  // token this browser session actually knows, starting from the compiled-in default and
-  // updated the moment the user successfully saves a new one via the Settings tab.
+  // The raw bearer token is never sent back by the server over the public tunnel (only
+  // masked) - but for requests that are genuinely local (not proxied through the tunnel),
+  // /api/session-token hands it over so the dashboard just works without the user ever
+  // needing to see or paste it. Starts from the compiled-in default (correct until a custom
+  // GATEWAY_AUTH_TOKEN is set) and is updated the moment a Settings save succeeds too.
   const [authToken, setAuthToken] = useState(DEFAULT_AUTH_TOKEN);
+
+  useEffect(() => {
+    fetch('/api/session-token')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.token) setAuthToken(data.token);
+      })
+      .catch(() => {
+        // Not local (e.g. opened via the public tunnel) - keep the default; Settings saves
+        // will 401 until the real token is entered manually, which is the correct behavior.
+      });
+  }, []);
 
   const [generations, setGenerations] = useState<GenerationRecord[]>([]);
   const [activePromptId, setActivePromptId] = useState<string | null>(null);

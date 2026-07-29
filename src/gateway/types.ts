@@ -17,6 +17,8 @@ export interface WorkflowParams {
   cfg?: number;
   samplerName?: string;
   negativePrompt?: string;
+  /** Filename of an image already uploaded to ComfyUI's input directory via /api/upload-image. */
+  referenceImage?: string;
 }
 
 /**
@@ -187,6 +189,9 @@ export interface AIStudioFunctionCallArgs {
   seed?: number;
   steps?: number;
   cfg?: number;
+  /** Filename of an image already uploaded via /api/upload-image - required for video_short. */
+  reference_image?: string;
+  referenceImage?: string;
 }
 
 export type FunctionCallPayload = AIStudioFunctionCallArgs;

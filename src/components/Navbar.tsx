@@ -1,6 +1,76 @@
-import React from 'react';
-import { Cpu, ShieldCheck, Radio, Sparkles, Terminal, Database, Sliders, Layers } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Cpu, ShieldCheck, Radio, Sparkles, Terminal, Database, Sliders, Layers, Link2, Check, Loader2, AlertTriangle } from 'lucide-react';
 import { SystemStats } from '../types';
+
+interface TunnelStatus {
+  status: 'disabled' | 'starting' | 'connected' | 'error';
+  url: string | null;
+  error: string | null;
+}
+
+/**
+ * A stable public link to this dashboard that doesn't depend on the local port being
+ * directly reachable - the gateway spawns its own Cloudflare quick tunnel on startup.
+ * The URL is ephemeral by design (changes on every restart, no domain to configure).
+ */
+const TunnelLinkPill: React.FC = () => {
+  const [tunnel, setTunnel] = useState<TunnelStatus>({ status: 'starting', url: null, error: null });
+  const [copied, setCopied] = useState(false);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/tunnel-status');
+      if (res.ok) setTunnel(await res.json());
+    } catch {
+      // Transient fetch failures aren't worth surfacing here - the next poll will recover.
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 4000);
+    return () => clearInterval(interval);
+  }, [fetchStatus]);
+
+  const handleClick = () => {
+    if (tunnel.status !== 'connected' || !tunnel.url) return;
+    navigator.clipboard.writeText(tunnel.url);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (tunnel.status === 'connected' && tunnel.url) {
+    return (
+      <button
+        onClick={handleClick}
+        title={tunnel.url}
+        className="hidden md:flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-cyan-800/50 text-cyan-300 text-xs font-medium transition-all hover:border-cyan-500/60"
+      >
+        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Link2 className="w-3.5 h-3.5" />}
+        <span>{copied ? 'Link Copied' : 'Public Link'}</span>
+      </button>
+    );
+  }
+
+  if (tunnel.status === 'error') {
+    return (
+      <div
+        title={tunnel.error || 'Public tunnel unavailable'}
+        className="hidden md:flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs font-medium"
+      >
+        <AlertTriangle className="w-3.5 h-3.5" />
+        <span>No Public Link</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="hidden md:flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 text-xs font-medium">
+      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+      <span>Connecting Tunnel...</span>
+    </div>
+  );
+};
 
 interface NavbarProps {
   activeTab: string;
@@ -115,7 +185,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>AES-256 Vault</span>
             </div>
 
-            {/* Cloudflare Tunnel / ComfyUI Connection Badge */}
+            {/* ComfyUI Connection Badge */}
             <button
               onClick={onRefreshStats}
               title="Click to re-ping ComfyUI system_stats"
@@ -128,6 +198,9 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Radio className={`w-3.5 h-3.5 ${isOnline ? 'text-emerald-400 animate-pulse' : 'text-rose-400'}`} />
               <span>{isOnline ? 'ComfyUI Connected' : 'Offline Mode'}</span>
             </button>
+
+            {/* Public Tunnel Link */}
+            <TunnelLinkPill />
 
             {/* VRAM Quick Pill */}
             {systemStats && (

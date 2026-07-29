@@ -42,21 +42,34 @@ WebSocket/HTTP API; generation history is stored in a real SQLite database via D
    ```
 5. Open `http://localhost:3000`.
 
-On Windows, `start.bat` launches the gateway, opens a Cloudflare tunnel (requires `cloudflared`
-installed separately), and opens the dashboard in your browser in one step; `stop.bat` tears it
-all down.
+On Windows, `start.bat` launches the gateway (which spawns its own Cloudflare quick tunnel -
+`cloudflared` installed separately, no account or domain needed) and opens the dashboard in your
+browser in one step; `stop.bat` tears it all down.
 
 ## Dashboard
 
-- **Studio Generator** - live VRAM/RAM gauges (from `nvidia-smi`, refreshed every 6s), the
-  generation form, and real-time SSE progress for the active job.
-- **Vault Gallery** - AES-256-encrypted generation history, searchable and filterable by model type.
+- **Studio Generator** - live VRAM/RAM gauges (from `nvidia-smi`, refreshed every 6s), a Free VRAM
+  button (unloads ComfyUI's models on demand), the generation form with an optional reference
+  image upload (required for video - see below - and usable as an image-to-image starting point
+  for Flux/SDXL), and real-time SSE progress with Download/Share on the finished result.
+- **Vault Gallery** - AES-256-encrypted generation history, searchable and filterable by model
+  type, with Download/Share on every completed item.
 - **AI Studio Schema** - the `generate_local_media` function-calling schema for Google AI Studio,
   plus a live tester that dispatches real jobs through the same gateway API.
 - **Workflows** - inspect and download the exact ComfyUI `workflow_api.json` payload for any
   model/aspect-ratio/prompt combination.
 - **Tunnel Config** - configure the ComfyUI URL, bearer token, and encryption secret; test the
   ComfyUI connection.
+
+The Navbar always shows a **Public Link** once the quick tunnel connects - a real, working HTTPS
+URL to reach the dashboard from anywhere, independent of whether port 3000 is directly reachable.
+It's ephemeral by design (changes every restart, since quick tunnels have no persistent identity).
+
+### Video generation needs a reference image
+
+SVD (`video_short`) is image-to-video, not text-to-video - there is no workflow that produces a
+video without a starting image. Upload one in the Studio Generator before selecting Quantized SVD;
+the button stays disabled with a clear reason until you do.
 
 ## How it works
 
@@ -70,8 +83,17 @@ all down.
   simulated progress.
 - Generation records live in a real SQLite database (`.data/gateway.sqlite3`, via
   `drizzle-orm/better-sqlite3`), with prompts and file paths AES-256-GCM encrypted.
-- `/api` routes are protected by a Bearer token (`GATEWAY_AUTH_TOKEN`); the handful of read-only
-  routes the dashboard needs on load stay open, everything else requires the header.
+- Generated media is served through `GET /api/view`, a proxy back to ComfyUI - not a raw
+  `127.0.0.1:8188` link, which would be meaningless to anyone viewing the dashboard through the
+  public tunnel (it'd resolve to *their* machine) and blocks the browser's `download` attribute
+  and Web Share API cross-origin anyway.
+- `/api` routes are protected by a Bearer token (`GATEWAY_AUTH_TOKEN`). Most of what the
+  dashboard itself needs is open for convenience (it can't know a token set directly in `.env`
+  until you save one via Settings), except `POST /settings`, which can reconfigure the whole
+  gateway. For that one, `GET /api/session-token` lets the dashboard authenticate itself
+  automatically - but only for requests that reach the server directly, not through the public
+  tunnel (detected via the absence of Cloudflare's `cf-*` headers, not just source IP, since the
+  tunnel process itself also connects over loopback).
 
 ## Scripts
 

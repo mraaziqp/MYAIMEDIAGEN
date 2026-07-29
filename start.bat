@@ -25,18 +25,18 @@ if not exist "node_modules" (
   echo.
 )
 
-echo [1/4] Freeing port 3000 if a previous gateway is still running...
+echo [1/3] Freeing port 3000 if a previous gateway is still running...
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":3000" ^| findstr "LISTENING"') do (
   taskkill /F /PID %%P >nul 2>&1
 )
+REM Force-killing the old gateway above doesn't stop its child cloudflared process on
+REM Windows, so it would otherwise leak one more stray tunnel process every restart.
+taskkill /F /IM cloudflared.exe >nul 2>&1
 
-echo [2/4] Launching Local AI Gateway and Dashboard...
+echo [2/3] Launching Local AI Gateway, Dashboard, and public tunnel...
 start "AI Gateway Server" /min cmd /c "npx tsx server.ts"
 
-echo [3/4] Connecting Cloudflare Public Tunnel (nexus)...
-start "Cloudflare Tunnel" /min cmd /c "cloudflared tunnel run --url http://127.0.0.1:3000 nexus"
-
-echo [4/4] Waiting for the gateway to come up...
+echo [3/3] Waiting for the gateway to come up...
 if "%FIRST_RUN%"=="1" (
   timeout /t 8 /nobreak >nul
 ) else (
@@ -57,8 +57,10 @@ echo.
 echo ========================================================
 echo   SYSTEM READY
 echo ========================================================
-echo   - Local Dashboard:        http://localhost:3000
-echo   - Public Tunnel Endpoint: https://api.dialabraai.co.za/api/ai-studio/function-call
+echo   - Local Dashboard: http://localhost:3000
+echo   - Public link:     check the dashboard header - it takes a few seconds
+echo                       to connect after the page loads, and changes each
+echo                       time you restart (no fixed domain needed).
 echo.
 echo   * To stop everything, double-click stop.bat
 echo ========================================================

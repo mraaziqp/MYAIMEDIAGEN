@@ -9,10 +9,14 @@ export const WorkflowInspector: React.FC = () => {
   const [prompt, setPrompt] = useState('Cyberpunk neon alleyway in neo-Tokyo with rain reflections, glowing signs, cinematic 8k');
   const [copied, setCopied] = useState(false);
 
+  // SVD is image-to-video - it has no valid workflow without a starting image. This is a
+  // read-only JSON preview tool with no upload capability of its own, so illustrate the
+  // shape with a clearly-labeled placeholder filename rather than crashing on selection.
   const { workflow, seed, dimensions } = buildComfyWorkflow({
     prompt,
     mediaType: selectedMediaType,
     aspectRatio: selectedAspectRatio,
+    referenceImage: selectedMediaType === 'video_short' ? 'PLACEHOLDER_upload_in_Studio_Generator.png' : undefined,
   });
 
   const workflowJson = JSON.stringify(workflow, null, 2);
@@ -148,6 +152,14 @@ export const WorkflowInspector: React.FC = () => {
               className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 resize-none font-sans"
             />
           </div>
+
+          {selectedMediaType === 'video_short' && (
+            <p className="text-[11px] text-amber-400 bg-amber-950/40 border border-amber-800/60 rounded-xl p-2.5">
+              SVD is image-to-video - this preview uses a placeholder filename for
+              "referenceImage". Actually generating video requires uploading a real reference
+              image first, in the Studio Generator tab.
+            </p>
+          )}
 
         </div>
 
