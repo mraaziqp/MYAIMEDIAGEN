@@ -32,6 +32,7 @@ export default function App() {
 
   const [settingsResponse, setSettingsResponse] = useState<SettingsResponse | null>(null);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [isFreeingVram, setIsFreeingVram] = useState(false);
   // The raw bearer token is never sent back by the server (only masked). This tracks the
   // token this browser session actually knows, starting from the compiled-in default and
   // updated the moment the user successfully saves a new one via the Settings tab.
@@ -210,6 +211,24 @@ export default function App() {
     }
   };
 
+  const handleFreeVram = async () => {
+    setIsFreeingVram(true);
+    try {
+      const res = await fetch('/api/free-vram', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to free VRAM');
+      setStats(data.stats as SystemStats);
+      showToast('success', `VRAM freed - ${data.stats.vramFreeMb} MB now available.`);
+    } catch (err: any) {
+      showToast('error', err?.message || 'Failed to free VRAM');
+    } finally {
+      setIsFreeingVram(false);
+    }
+  };
+
   const handleFunctionCallTriggered = () => {
     fetchTelemetry();
     setTimeout(fetchGenerations, 1500);
@@ -249,7 +268,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 pb-16">
         {activeTab === 'generate' && (
           <div className="space-y-6">
-            <VramGauge stats={stats} onRefresh={fetchTelemetry} />
+            <VramGauge stats={stats} onRefresh={fetchTelemetry} onFreeVram={handleFreeVram} isFreeingVram={isFreeingVram} />
 
             {activePromptId && (
               <ProgressViewer promptId={activePromptId} onCompleted={handleProgressCompleted} onInterrupt={handleInterrupt} />

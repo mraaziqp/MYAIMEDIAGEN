@@ -6,6 +6,7 @@ import {
   Copy,
   Check,
   Download,
+  Share2,
   Film,
   Image as ImageIcon,
   Zap,
@@ -14,8 +15,10 @@ import {
   Info,
   X,
   HardDrive,
+  AlertOctagon,
 } from 'lucide-react';
 import { GenerationRecord } from '../types';
+import { filenameFromMediaUrl, shareMedia } from '../lib/mediaShare';
 
 interface MediaGalleryProps {
   records: GenerationRecord[];
@@ -27,6 +30,18 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedRecord, setSelectedRecord] = useState<GenerationRecord | null>(null);
+  const [shareStateById, setShareStateById] = useState<Record<string, 'sharing' | 'shared' | 'copied'>>({});
+
+  const handleShare = async (item: GenerationRecord) => {
+    setShareStateById((s) => ({ ...s, [item.id]: 'sharing' }));
+    const result = await shareMedia(item.mediaUrl);
+    if (result === 'shared' || result === 'copied') {
+      setShareStateById((s) => ({ ...s, [item.id]: result }));
+      setTimeout(() => setShareStateById((s) => { const next = { ...s }; delete next[item.id]; return next; }), 2000);
+    } else {
+      setShareStateById((s) => { const next = { ...s }; delete next[item.id]; return next; });
+    }
+  };
 
   const filteredRecords = records.filter((r) => {
     const matchesType = filterType === 'all' || r.modelType === filterType;
@@ -138,7 +153,14 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
             >
               {/* Media Container */}
               <div className="relative aspect-video bg-slate-950 overflow-hidden cursor-pointer" onClick={() => setSelectedRecord(item)}>
-                {item.mediaUrl.endsWith('.mp4') ? (
+                {!item.mediaUrl ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-rose-400/80 space-y-1.5">
+                    <AlertOctagon className="w-6 h-6" />
+                    <span className="text-[11px] font-semibold uppercase tracking-wide">
+                      {item.status === 'failed' ? 'Render Failed' : 'No Media'}
+                    </span>
+                  </div>
+                ) : item.mediaUrl.endsWith('.mp4') ? (
                   <video
                     src={item.mediaUrl}
                     controls
@@ -215,16 +237,30 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
                     >
                       <Info className="w-3.5 h-3.5 text-cyan-400" />
                     </button>
-                    <a
-                      href={item.mediaUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      download
-                      className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
-                      title="Download Asset"
-                    >
-                      <Download className="w-3.5 h-3.5 text-slate-300" />
-                    </a>
+                    {item.mediaUrl && (
+                      <>
+                        <button
+                          onClick={() => handleShare(item)}
+                          disabled={shareStateById[item.id] === 'sharing'}
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-slate-300 transition-colors"
+                          title="Share"
+                        >
+                          {shareStateById[item.id] === 'shared' || shareStateById[item.id] === 'copied' ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Share2 className="w-3.5 h-3.5 text-fuchsia-400" />
+                          )}
+                        </button>
+                        <a
+                          href={item.mediaUrl}
+                          download={filenameFromMediaUrl(item.mediaUrl)}
+                          className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                          title="Download Asset"
+                        >
+                          <Download className="w-3.5 h-3.5 text-slate-300" />
+                        </a>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -254,12 +290,49 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
 
             {/* Media Preview */}
             <div className="mb-4 rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
-              {selectedRecord.mediaUrl.endsWith('.mp4') ? (
+              {!selectedRecord.mediaUrl ? (
+                <div className="w-full h-48 flex flex-col items-center justify-center text-rose-400/80 space-y-2">
+                  <AlertOctagon className="w-8 h-8" />
+                  <span className="text-xs font-semibold uppercase tracking-wide">
+                    {selectedRecord.status === 'failed' ? 'Render Failed - No Media Produced' : 'No Media'}
+                  </span>
+                </div>
+              ) : selectedRecord.mediaUrl.endsWith('.mp4') ? (
                 <video src={selectedRecord.mediaUrl} controls autoPlay loop className="w-full max-h-80 object-contain" />
               ) : (
                 <img src={selectedRecord.mediaUrl} alt="Preview" className="w-full max-h-80 object-contain" />
               )}
             </div>
+
+            {selectedRecord.mediaUrl && (
+              <div className="flex items-center space-x-2 mb-4">
+                <a
+                  href={selectedRecord.mediaUrl}
+                  download={filenameFromMediaUrl(selectedRecord.mediaUrl)}
+                  className="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center space-x-1.5 transition-all"
+                >
+                  <Download className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Download</span>
+                </a>
+                <button
+                  onClick={() => handleShare(selectedRecord)}
+                  disabled={shareStateById[selectedRecord.id] === 'sharing'}
+                  className="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-60 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center space-x-1.5 transition-all"
+                >
+                  {shareStateById[selectedRecord.id] === 'shared' || shareStateById[selectedRecord.id] === 'copied' ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>{shareStateById[selectedRecord.id] === 'copied' ? 'Link Copied' : 'Shared'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Share2 className="w-3.5 h-3.5 text-fuchsia-400" />
+                      <span>{shareStateById[selectedRecord.id] === 'sharing' ? 'Sharing...' : 'Share'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
 
             {/* Metadata Fields */}
             <div className="space-y-3 text-xs font-mono">

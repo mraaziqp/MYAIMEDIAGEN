@@ -32,7 +32,11 @@ app.use(express.json());
  * req.path inside this handler, so every check below is relative to '/api', not absolute.
  */
 const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
-  // Allow open access to stream endpoints, settings GET, and system stats for frontend convenience
+  // Open for dashboard convenience. The browser can't know a custom GATEWAY_AUTH_TOKEN set
+  // directly in .env until the user re-saves it via the Settings tab, so these must stay
+  // reachable without it. Interrupt/free-vram are low-severity nuisance-only actions (stop
+  // or unload a render) if hit externally - strictly less sensitive than /generate, which
+  // is already open. POST /settings is NOT here: it can hijack the whole gateway config.
   if (
     req.path.startsWith('/stream') ||
     req.path === '/system-stats' ||
@@ -40,7 +44,10 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
     req.path === '/generate' ||
     req.path === '/generations' ||
     (req.path === '/settings' && req.method === 'GET') ||
-    req.path === '/workflow-download'
+    req.path === '/workflow-download' ||
+    req.path === '/view' ||
+    req.path === '/interrupt' ||
+    req.path === '/free-vram'
   ) {
     return next();
   }
@@ -91,6 +98,44 @@ app.get('/api/system-stats', async (req: Request, res: Response) => {
       });
     }
     res.status(500).json({ error: 'Failed to fetch system stats', details: err?.message });
+  }
+});
+
+/**
+ * GET /api/view
+ * Proxies generated image/video bytes from ComfyUI through the gateway's own origin.
+ * Required for the browser's `download` attribute and Web Share API's fetch() to work
+ * (both are blocked cross-origin, and ComfyUI has CORS disabled by default), and for
+ * media to be viewable at all when the dashboard is accessed remotely through a tunnel -
+ * a raw ComfyUI URL like http://127.0.0.1:8188/... resolves to the *visitor's* machine.
+ */
+app.get('/api/view', async (req: Request, res: Response) => {
+  try {
+    const filename = req.query.filename as string;
+    const subfolder = (req.query.subfolder as string) || '';
+    const type = (req.query.type as string) || 'output';
+
+    if (!filename) {
+      return res.status(400).json({ error: 'Missing filename parameter' });
+    }
+
+    const settings = getSettings();
+    const cleanUrl = settings.comfyUrl.replace(/\/$/, '');
+    const targetUrl = `${cleanUrl}/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(
+      subfolder
+    )}&type=${encodeURIComponent(type)}`;
+
+    const comfyRes = await fetch(targetUrl);
+    if (!comfyRes.ok) {
+      return res.status(comfyRes.status).json({ error: 'Media not found on ComfyUI' });
+    }
+
+    res.setHeader('Content-Type', comfyRes.headers.get('content-type') || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${filename.replace(/"/g, '')}"`);
+    const arrayBuffer = await comfyRes.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to proxy media from ComfyUI', details: err?.message });
   }
 });
 
@@ -186,6 +231,37 @@ app.post('/api/interrupt', async (req: Request, res: Response) => {
     res.json({ success, message: 'GPU execution interrupted successfully.' });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to interrupt GPU execution', details: err?.message });
+  }
+});
+
+/**
+ * POST /api/free-vram
+ * Unloads models from ComfyUI and frees the VRAM/RAM cache (real ComfyUI /free API).
+ * Refused with 409 while a job is actively executing.
+ */
+app.post('/api/free-vram', async (req: Request, res: Response) => {
+  try {
+    const settings = getSettings();
+    await comfyService.freeVram(settings.comfyUrl);
+
+    // ComfyUI's /free just sets a flag - its worker thread unloads models and runs CUDA's
+    // cache-release asynchronously, which takes a few seconds. Poll briefly so the response
+    // reflects VRAM actually being free rather than a stale, barely-changed reading.
+    let stats = await getSystemStatsInternal(settings.comfyUrl);
+    let previousFree = stats.vramFreeMb;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      stats = await getSystemStatsInternal(settings.comfyUrl);
+      if (stats.vramFreeMb <= previousFree) break; // stabilized
+      previousFree = stats.vramFreeMb;
+    }
+
+    res.json({ success: true, message: 'ComfyUI VRAM freed.', stats });
+  } catch (err: any) {
+    if (err instanceof JobInProgressError) {
+      return res.status(409).json({ error: err.message, activePromptId: err.activePromptId });
+    }
+    res.status(500).json({ error: 'Failed to free VRAM', details: err?.message });
   }
 });
 

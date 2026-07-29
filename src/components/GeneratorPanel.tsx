@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, AlertCircle, ShieldAlert } from 'lucide-react';
+import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert } from 'lucide-react';
 import { MediaType, AspectRatio, WorkflowParams, SystemStats } from '../types';
 
 interface GeneratorPanelProps {
@@ -59,8 +59,14 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
     handleRandomizeSeed();
   };
 
+  // Pre-flight Memory requirement check - the same per-model thresholds the backend's
+  // OOM guardrail enforces (vramMonitor.ts), checked here too so the button never invites
+  // a click the server is just going to reject anyway.
+  const requiredVramMb = mediaType === 'video_short' ? 6500 : mediaType === 'image_hd' ? 5200 : 3800;
+  const freeVramMb = stats?.vramFreeMb ?? 0;
+
   const gpuUnavailable = !stats;
-  const vramCritical = !!stats && stats.vramFreeMb < 2000;
+  const vramCritical = !!stats && freeVramMb < requiredVramMb;
   const submitBlocked = isGenerating || !prompt.trim() || gpuUnavailable || vramCritical;
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -75,11 +81,6 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
       steps: customSteps ? Number(customSteps) : undefined,
     });
   };
-
-  // Pre-flight Memory requirement check
-  const requiredVramMb = mediaType === 'video_short' ? 6500 : mediaType === 'image_hd' ? 5200 : 3800;
-  const freeVramMb = stats?.vramFreeMb ?? 0;
-  const isVramTight = !!stats && !vramCritical && freeVramMb < requiredVramMb;
 
   return (
     <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-2xl text-slate-100">
@@ -267,24 +268,14 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
 
         </div>
 
-        {/* VRAM Tight Alert Warning */}
-        {isVramTight && (
-          <div className="flex items-center space-x-2 p-3 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-300 text-xs">
-            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>
-              Free VRAM ({Math.round(freeVramMb)} MB) is close to the {requiredVramMb} MB this model typically needs - the render may run slower or fail if usage spikes.
-            </span>
-          </div>
-        )}
-
-        {/* GPU Unavailable / Critical VRAM Hard Block */}
+        {/* GPU Unavailable / Insufficient VRAM Hard Block - mirrors the backend's OOM guardrail exactly */}
         {(gpuUnavailable || vramCritical) && (
           <div className="flex items-center space-x-2 p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs">
             <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
             <span>
               {gpuUnavailable
                 ? 'GPU telemetry unavailable - cannot verify VRAM, so rendering is disabled.'
-                : `Free VRAM (${freeVramMb} MB) is below the 2000 MB safety threshold - rendering is disabled to prevent an OOM crash.`}
+                : `Free VRAM (${freeVramMb} MB) is below the ${requiredVramMb} MB this model needs - rendering is disabled to prevent an OOM crash. Try "Free VRAM" above, or pick a lighter model.`}
             </span>
           </div>
         )}

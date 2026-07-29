@@ -35,6 +35,10 @@ export default defineConfig(() => {
           // Real-time API routes (VRAM telemetry, generation status, SSE progress) must
           // never be intercepted or cached - only the app shell is precached.
           navigateFallbackDenylist: [/^\/api/],
+          // Take over immediately on update instead of waiting for every open tab of the
+          // old version to close - this app changes often and should never run stale code.
+          skipWaiting: true,
+          clientsClaim: true,
         },
       }),
     ],

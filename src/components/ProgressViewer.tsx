@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, Clock, Cpu, Octagon, CheckCircle2, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Activity, Clock, Cpu, Octagon, CheckCircle2, AlertTriangle, ShieldCheck, XCircle, Download, Share2, Check } from 'lucide-react';
 import { StreamProgressEvent } from '../types';
+import { filenameFromMediaUrl, shareMedia } from '../lib/mediaShare';
 
 interface ProgressViewerProps {
   promptId: string;
@@ -26,6 +27,18 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
   });
 
   const [isDone, setIsDone] = useState(false);
+  const [shareState, setShareState] = useState<'idle' | 'sharing' | 'shared' | 'copied'>('idle');
+
+  const handleShare = async (mediaUrl: string) => {
+    setShareState('sharing');
+    const result = await shareMedia(mediaUrl);
+    if (result === 'shared' || result === 'copied') {
+      setShareState(result);
+      setTimeout(() => setShareState('idle'), 2000);
+    } else {
+      setShareState('idle');
+    }
+  };
 
   useEffect(() => {
     if (!promptId) return;
@@ -143,6 +156,10 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
               <span className="text-rose-400 flex items-center space-x-1">
                 <AlertTriangle className="w-3.5 h-3.5" /> <span>Halted</span>
               </span>
+            ) : event.status === 'failed' ? (
+              <span className="text-rose-400 flex items-center space-x-1">
+                <XCircle className="w-3.5 h-3.5" /> <span>Failed</span>
+              </span>
             ) : (
               <span className="text-cyan-400 flex items-center space-x-1">
                 <ShieldCheck className="w-3.5 h-3.5 text-cyan-400 animate-pulse" /> <span>GPU Active</span>
@@ -176,13 +193,42 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
               className="w-full max-h-72 object-cover rounded-lg border border-slate-800"
             />
           )}
+
+          <div className="flex items-center space-x-2 mt-3">
+            <a
+              href={event.mediaUrl}
+              download={filenameFromMediaUrl(event.mediaUrl)}
+              className="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center space-x-1.5 transition-all"
+            >
+              <Download className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Download</span>
+            </a>
+            <button
+              onClick={() => handleShare(event.mediaUrl!)}
+              disabled={shareState === 'sharing'}
+              className="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-60 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center space-x-1.5 transition-all"
+            >
+              {shareState === 'shared' || shareState === 'copied' ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{shareState === 'copied' ? 'Link Copied' : 'Shared'}</span>
+                </>
+              ) : (
+                <>
+                  <Share2 className="w-3.5 h-3.5 text-fuchsia-400" />
+                  <span>{shareState === 'sharing' ? 'Sharing...' : 'Share'}</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Error / Interrupted Banner */}
-      {event.status === 'interrupted' && (
+      {/* Error / Interrupted / Failed Banner */}
+      {(event.status === 'interrupted' || event.status === 'failed') && (
         <div className="mt-3 p-3 rounded-xl bg-rose-950/50 border border-rose-800/80 text-rose-300 text-xs">
-          {event.error || 'Pipeline halted via user interrupt request.'}
+          {event.error ||
+            (event.status === 'interrupted' ? 'Pipeline halted via user interrupt request.' : 'GPU execution failed.')}
         </div>
       )}
     </div>
