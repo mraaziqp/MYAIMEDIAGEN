@@ -131,6 +131,7 @@ export default function App() {
           seed: params.seed,
           steps: params.steps,
           cfg: params.cfg,
+          referenceImage: params.referenceImage,
         }),
       });
       const data = await res.json();
