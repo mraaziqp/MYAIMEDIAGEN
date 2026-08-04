@@ -59,8 +59,9 @@ echo   SYSTEM READY
 echo ========================================================
 echo   - Local Dashboard: http://localhost:3000
 echo   - Public link:     check the dashboard header - it takes a few seconds
-echo                       to connect after the page loads, and changes each
-echo                       time you restart (no fixed domain needed).
+echo                       to connect after the page loads. Changes every
+echo                       restart unless CLOUDFLARE_TUNNEL_NAME/HOSTNAME are
+echo                       set in .env for a fixed URL (see README.md).
 echo.
 echo   * To stop everything, double-click stop.bat
 echo ========================================================

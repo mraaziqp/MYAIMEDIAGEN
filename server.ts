@@ -19,7 +19,7 @@ import {
 } from './src/gateway/db/store.js';
 import { comfyService, JobInProgressError, OomGuardrailError } from './src/gateway/comfyService.js';
 import { getSystemStatsInternal, GpuTelemetryError } from './src/gateway/vramMonitor.js';
-import { startQuickTunnel, stopQuickTunnel, getTunnelStatus } from './src/gateway/tunnelManager.js';
+import { startTunnel, stopTunnel, getTunnelStatus } from './src/gateway/tunnelManager.js';
 import { buildComfyWorkflow } from './src/gateway/workflowMapper.js';
 import { encryptData, hashData, maskSecret } from './src/gateway/cryptoUtils.js';
 import { WorkflowParams, FunctionCallPayload, MediaType, AspectRatio } from './src/types.js';
@@ -573,17 +573,17 @@ async function startServer() {
     console.log(`  Local AI Media Gateway running on http://0.0.0.0:${PORT}`);
     console.log(`  RTX 3060 Ti ComfyUI Connector & SSE Controller`);
     console.log(`====================================================`);
-    startQuickTunnel(PORT);
+    startTunnel(PORT);
   });
 }
 
 startServer();
 
 process.on('SIGINT', () => {
-  stopQuickTunnel();
+  stopTunnel();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
-  stopQuickTunnel();
+  stopTunnel();
   process.exit(0);
 });

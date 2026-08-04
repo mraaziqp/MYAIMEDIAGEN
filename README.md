@@ -63,7 +63,31 @@ browser in one step; `stop.bat` tears it all down.
 
 The Navbar always shows a **Public Link** once the quick tunnel connects - a real, working HTTPS
 URL to reach the dashboard from anywhere, independent of whether port 3000 is directly reachable.
-It's ephemeral by design (changes every restart, since quick tunnels have no persistent identity).
+It's ephemeral by design (changes every restart, since quick tunnels have no persistent identity)
+unless you set up a stable URL below.
+
+### Stable public URL (optional)
+
+By default the public link is a random `*.trycloudflare.com` address that changes every time
+the gateway restarts. If you already have a domain added to your Cloudflare account, you can
+get one fixed URL that never changes instead - a one-time setup, done once on this PC. A
+Cloudflare Tunnel's DNS route is just one new record for whatever subdomain you pick, so this
+is safe to run even on a domain another one of your own apps already uses on a different
+subdomain (e.g. `savestate.co.za` already serving NexusEmu) - `imagegen.savestate.co.za`
+alongside it doesn't touch NexusEmu's existing record at all.
+
+1. Install `cloudflared` if you haven't already (same requirement as the default quick tunnel).
+2. `cloudflared tunnel login` - opens a browser, pick the domain/zone you want to use.
+3. `cloudflared tunnel create myaiimagegen` - creates the tunnel and its credentials file.
+4. `cloudflared tunnel route dns myaiimagegen imagegen.savestate.co.za` - points a subdomain
+   of your choice at the tunnel (swap in whatever subdomain you like on your domain).
+5. In `.env`, set `CLOUDFLARE_TUNNEL_NAME="myaiimagegen"` and
+   `CLOUDFLARE_TUNNEL_HOSTNAME="imagegen.savestate.co.za"` (matching steps 3-4 exactly).
+6. Restart the gateway (`start.bat` or `npm run dev`). The Navbar's Public Link will now show
+   `https://imagegen.savestate.co.za` and it will be the same URL every time - safe to
+   bookmark, or put behind Cloudflare Access if you want to add a login in front of it.
+
+Leave both env vars unset to keep using the default zero-config quick tunnel.
 
 ### Video generation needs a reference image
 
