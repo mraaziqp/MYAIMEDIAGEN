@@ -19,6 +19,14 @@ export interface WorkflowParams {
   negativePrompt?: string;
   /** Filename of an image already uploaded to ComfyUI's input directory via /api/upload-image. */
   referenceImage?: string;
+  /**
+   * Real pixel dimensions of referenceImage, read server-side at upload time. Used to size
+   * the newly-generated background canvas to exactly match the original photo so the
+   * face-preserving composite (see workflowMapper.ts's scene-swap graph) can paste the
+   * original people back with zero stretch/misalignment.
+   */
+  referenceImageWidth?: number;
+  referenceImageHeight?: number;
 }
 
 /**
@@ -162,10 +170,22 @@ export interface SSEProgressPayload {
   vramPeakMb?: number;
   vramCurrentMb?: number;
   etaSeconds?: number;
+  elapsedMs?: number;
   durationMs?: number;
 }
 
 export type StreamProgressEvent = SSEProgressPayload;
+
+/**
+ * Real average render duration for one model type, computed from actually-completed jobs in
+ * SQLite (see getDurationStats in db/store.ts). avgDurationMs is null when that model has
+ * never completed a run yet - the UI must show "No data yet", not a guessed number.
+ */
+export interface DurationStat {
+  modelType: string;
+  avgDurationMs: number | null;
+  sampleCount: number;
+}
 
 export interface GatewaySettings {
   comfyUrl: string;

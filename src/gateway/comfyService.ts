@@ -9,7 +9,7 @@ import {
 } from '../types.js';
 import { buildComfyUiWorkflow } from './workflowMapper.js';
 import { getSystemStatsInternal, runPreflightCheck } from './vramMonitor.js';
-import { saveGeneration, getSettings } from './db/store.js';
+import { saveGeneration, getSettings, getDurationStats } from './db/store.js';
 import { encryptData } from './cryptoUtils.js';
 
 const EXECUTION_TIMEOUT_MS = 5 * 60 * 1000;
@@ -138,6 +138,18 @@ class ComfyService extends EventEmitter {
     const clientId = `gateway_${crypto.randomUUID().slice(0, 8)}`;
     const startTime = Date.now();
 
+    // Real historical average for this exact model, from actually-completed jobs in SQLite -
+    // used only as an ETA hint for the model-load phase below (before real step-progress
+    // exists to extrapolate from). null when this model has never completed a run yet; the
+    // ETA is simply omitted in that case rather than guessing.
+    const modelAvgMs = getDurationStats().find((s) => s.modelType === record.modelType)?.avgDurationMs ?? null;
+
+    // Set on the first real 'progress' (KSampler) message so ETA during denoising is
+    // extrapolated from this run's own observed ms/step, not a historical guess - it
+    // self-corrects to whatever the GPU is actually doing right now (other VRAM pressure,
+    // thermal throttling, etc.) in a way a fixed average never could.
+    let samplingStartTime: number | null = null;
+
     // Guards against double-settling the job (e.g. a 'close' event firing after
     // 'executed' already completed it, or the timeout firing after a late success).
     let settled = false;
@@ -148,7 +160,13 @@ class ComfyService extends EventEmitter {
     try {
       ws = new WebSocket(wsUrl);
     } catch (err: any) {
-      this.handleJobError(promptId, record, err?.message || `Failed to open WebSocket to ${wsUrl}`, 'dispatch_error');
+      this.handleJobError(
+        promptId,
+        record,
+        err?.message || `Failed to open WebSocket to ${wsUrl}`,
+        'dispatch_error',
+        Date.now() - startTime
+      );
       return;
     }
 
@@ -159,7 +177,8 @@ class ComfyService extends EventEmitter {
         promptId,
         record,
         `GPU execution timed out after 5 minutes with no 'executed' event from ComfyUI (the GPU may be hung).`,
-        'timeout'
+        'timeout',
+        Date.now() - startTime
       );
       try {
         ws.close();
@@ -189,13 +208,19 @@ class ComfyService extends EventEmitter {
         }
       } catch (err: any) {
         finalize(() => {
-          this.handleJobError(promptId, record, err?.message || 'Failed to submit workflow to ComfyUI', 'dispatch_error');
+          this.handleJobError(
+            promptId,
+            record,
+            err?.message || 'Failed to submit workflow to ComfyUI',
+            'dispatch_error',
+            Date.now() - startTime
+          );
           ws.close();
         });
       }
     });
 
-    ws.on('message', (data: WebSocket.RawData) => {
+    ws.on('message', async (data: WebSocket.RawData) => {
       if (settled) return;
       try {
         const msg = JSON.parse(data.toString());
@@ -211,19 +236,51 @@ class ComfyService extends EventEmitter {
             // status instead of the same flat "20%" every other prep node reports. Without
             // this, a long model load looks identical to being stuck.
             const isModelLoad = nodeId === '1';
+            const elapsedMs = Date.now() - startTime;
+            const elapsedSeconds = Math.round(elapsedMs / 1000);
+            // Real ETA hint from this model's own completed-job history (see modelAvgMs
+            // above) - omitted entirely (not zeroed/guessed) when there's no history yet.
+            const etaSeconds =
+              isModelLoad && modelAvgMs ? Math.max(0, Math.round((modelAvgMs - elapsedMs) / 1000)) : undefined;
+            // Best-effort real VRAM reading for this event - the model checkpoint here (fp8
+            // Flux + T5 text encoder) exceeds this GPU's 8GB VRAM, so ComfyUI streams weights
+            // in from system RAM rather than holding them resident; that streaming is what
+            // makes this phase take minutes. Without a real vramCurrentMb/etaSeconds reading
+            // the frontend has nothing to render here but blank/NaN, which reads as frozen.
+            let vramCurrentMb: number | undefined;
+            try {
+              const liveStats = await getSystemStatsInternal(comfyUrl);
+              vramCurrentMb = liveStats.vramUsedMb;
+            } catch {
+              // Telemetry is best-effort here; the progress event still carries honest
+              // status text and elapsed time even if this particular nvidia-smi read fails.
+            }
             this.emitProgress({
               promptId,
               status: 'processing',
               node: `Node_${nodeId}`,
               nodeTitle: isModelLoad
-                ? 'Loading model checkpoint into VRAM - first load or a cold cache can take a few minutes...'
-                : `Preparing Node ${nodeId}`,
+                ? `Streaming fp8 model weights from RAM into VRAM (model exceeds 8GB, typically takes 2-4 min) - ${elapsedSeconds}s elapsed`
+                : `Preparing Node ${nodeId} - ${elapsedSeconds}s elapsed`,
               percentage: isModelLoad ? 5 : 15,
+              vramCurrentMb,
+              elapsedMs,
+              etaSeconds,
             });
           }
         } else if (msg.type === 'progress') {
           const { value, max } = msg.data;
           const pct = Math.round((value / max) * 100);
+          const elapsedMs = Date.now() - startTime;
+          if (samplingStartTime === null) samplingStartTime = Date.now();
+          // Live ms/step from this run's own observed steps so far, extrapolated across the
+          // remaining steps - self-corrects as the run progresses, unlike a fixed historical
+          // average. Only computable once at least one step has actually completed.
+          let etaSeconds: number | undefined;
+          if (value > 0) {
+            const msPerStep = (Date.now() - samplingStartTime) / value;
+            etaSeconds = Math.max(0, Math.round((msPerStep * (max - value)) / 1000));
+          }
           this.emitProgress({
             promptId,
             status: 'processing',
@@ -232,6 +289,8 @@ class ComfyService extends EventEmitter {
             step: value,
             maxSteps: max,
             percentage: pct,
+            elapsedMs,
+            etaSeconds,
           });
         } else if (msg.type === 'executed') {
           const output = msg.data.output;
@@ -282,6 +341,7 @@ class ComfyService extends EventEmitter {
                 mediaUrl,
                 localFilePath,
                 durationMs,
+                elapsedMs: durationMs,
               });
 
               ws.close();
@@ -290,7 +350,7 @@ class ComfyService extends EventEmitter {
         } else if (msg.type === 'execution_error') {
           const errDetail = msg.data?.exception_message || msg.data?.exception_type || 'ComfyUI execution error';
           finalize(() => {
-            this.handleJobError(promptId, record, errDetail, 'execution_error');
+            this.handleJobError(promptId, record, errDetail, 'execution_error', Date.now() - startTime);
             ws.close();
           });
         }
@@ -299,7 +359,13 @@ class ComfyService extends EventEmitter {
 
     ws.on('error', (err) => {
       finalize(() => {
-        this.handleJobError(promptId, record, `ComfyUI WebSocket error: ${err.message}`, 'websocket_error');
+        this.handleJobError(
+          promptId,
+          record,
+          `ComfyUI WebSocket error: ${err.message}`,
+          'websocket_error',
+          Date.now() - startTime
+        );
       });
     });
 
@@ -310,13 +376,20 @@ class ComfyService extends EventEmitter {
           promptId,
           record,
           `ComfyUI WebSocket connection dropped unexpectedly before the job completed (close code ${code}).`,
-          'websocket_closed'
+          'websocket_closed',
+          Date.now() - startTime
         );
       });
     });
   }
 
-  private handleJobError(promptId: string, record: GenerationRecord, errorMsg: string, reasonCode: string = 'error') {
+  private handleJobError(
+    promptId: string,
+    record: GenerationRecord,
+    errorMsg: string,
+    reasonCode: string = 'error',
+    elapsedMs?: number
+  ) {
     const isOom = /out[\s-]?of[\s-]?memory|\boom\b|cuda error|insufficient memory|allocat(e|ion) failed/i.test(errorMsg);
 
     record.status = 'failed';
@@ -348,6 +421,7 @@ class ComfyService extends EventEmitter {
       nodeTitle: isOom ? 'GPU Out-Of-Memory' : 'GPU Execution Failed',
       percentage: 0,
       error: errorMsg,
+      elapsedMs,
     });
   }
 
@@ -369,6 +443,10 @@ class ComfyService extends EventEmitter {
 
   public isJobInProgress(): boolean {
     return this.currentExecutingPromptId !== null;
+  }
+
+  public getCurrentPromptId(): string | null {
+    return this.currentExecutingPromptId;
   }
 
   /**

@@ -8,7 +8,7 @@ import { MediaGallery } from './components/MediaGallery';
 import { ToolSchemaInspector } from './components/ToolSchemaInspector';
 import { TunnelSettings } from './components/TunnelSettings';
 import { WorkflowInspector } from './components/WorkflowInspector';
-import { SystemStats, GenerationRecord, GatewaySettings, WorkflowParams } from './types';
+import { SystemStats, GenerationRecord, GatewaySettings, WorkflowParams, StreamProgressEvent, DurationStat } from './types';
 
 const DEFAULT_AUTH_TOKEN = 'sec_rtx3060ti_gateway_key_9988';
 
@@ -50,6 +50,18 @@ export default function App() {
         // Not local (e.g. opened via the public tunnel) - keep the default; Settings saves
         // will 401 until the real token is entered manually, which is the correct behavior.
       });
+
+    // Reattach to a generation that's genuinely still running on the GPU after a page
+    // refresh, instead of just losing the live view and looking like the job vanished.
+    fetch('/api/current-job')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.activePromptId) {
+          setActivePromptId(data.activePromptId);
+          setIsSubmitting(true);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const [generations, setGenerations] = useState<GenerationRecord[]>([]);
@@ -106,13 +118,39 @@ export default function App() {
     }
   }, []);
 
+  // Real average render duration per model, from actually-completed jobs (see
+  // getDurationStats in db/store.ts) - drives the GeneratorPanel's timing badges instead of
+  // the hardcoded guesses that used to live there. Refetched after every generation
+  // completes (see handleGenerationTerminal) so the average stays current.
+  const [durationStats, setDurationStats] = useState<DurationStat[]>([]);
+  const fetchDurationStats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/duration-stats');
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.stats) setDurationStats(data.stats);
+      }
+    } catch (err) {
+      console.warn('Failed to fetch duration stats:', err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchTelemetry();
     fetchGenerations();
     fetchSettings();
-    const interval = setInterval(fetchTelemetry, 6000);
+    fetchDurationStats();
+  }, [fetchTelemetry, fetchGenerations, fetchSettings, fetchDurationStats]);
+
+  // Poll VRAM/RAM telemetry faster while a job is actually running (real-time GPU movement
+  // matters most exactly then) and back off to a slower idle cadence otherwise, rather than
+  // a single fixed interval that's either too slow during a render or wastes nvidia-smi
+  // shell-outs at idle.
+  useEffect(() => {
+    const intervalMs = isSubmitting || activePromptId ? 2000 : 6000;
+    const interval = setInterval(fetchTelemetry, intervalMs);
     return () => clearInterval(interval);
-  }, [fetchTelemetry, fetchGenerations, fetchSettings]);
+  }, [fetchTelemetry, isSubmitting, activePromptId]);
 
   const handleGenerate = async (params: WorkflowParams) => {
     setIsSubmitting(true);
@@ -155,27 +193,50 @@ export default function App() {
       });
       if (res.ok) {
         showToast('info', 'GPU interrupt command dispatched.');
+        // The gateway's SSE stream emits the 'interrupted' terminal event itself once the
+        // job is actually halted - handleGenerationTerminal picks it up from there, so the
+        // progress card stays visible with an honest "Halted" state instead of just vanishing.
       } else {
         const data = await res.json().catch(() => ({}));
         showToast('error', data?.error || 'Failed to send interrupt signal.');
       }
     } catch (err) {
       showToast('error', 'Failed to send interrupt signal.');
-    } finally {
-      setActivePromptId(null);
-      setIsSubmitting(false);
-      fetchTelemetry();
-      fetchGenerations();
     }
   };
 
-  const handleProgressCompleted = () => {
+  // Fires once for any terminal SSE state (completed/failed/interrupted). Deliberately does
+  // NOT clear activePromptId - the progress card stays mounted showing its final state (with
+  // the completed media preview + Download/Share/View-in-Gallery, or the failure reason) until
+  // the user explicitly dismisses it via handleDismissProgress/handleViewGallery, or starts a
+  // new render. Previously this cleared activePromptId immediately, which unmounted the card
+  // in the same render pass the 'completed' event arrived in, so the finished-render UI never
+  // actually got a chance to show.
+  const handleGenerationTerminal = useCallback(
+    (event: StreamProgressEvent) => {
+      setIsSubmitting(false);
+      if (event.status === 'completed') {
+        showToast('success', 'Media render finished & vaulted!');
+      } else if (event.status === 'failed') {
+        showToast('error', event.error || 'GPU execution failed.');
+      } else if (event.status === 'interrupted') {
+        showToast('info', 'GPU job halted.');
+      }
+      fetchGenerations();
+      fetchTelemetry();
+      if (event.status === 'completed') fetchDurationStats();
+    },
+    [showToast, fetchGenerations, fetchTelemetry, fetchDurationStats]
+  );
+
+  const handleDismissProgress = useCallback(() => {
     setActivePromptId(null);
-    setIsSubmitting(false);
-    showToast('success', 'Media render finished & vaulted!');
-    fetchGenerations();
-    fetchTelemetry();
-  };
+  }, []);
+
+  const handleViewGallery = useCallback(() => {
+    setActivePromptId(null);
+    setActiveTab('gallery');
+  }, []);
 
   const handleUpdateSettings = async (newSettings: Partial<GatewaySettings>) => {
     try {
@@ -286,10 +347,16 @@ export default function App() {
             <VramGauge stats={stats} onRefresh={fetchTelemetry} onFreeVram={handleFreeVram} isFreeingVram={isFreeingVram} />
 
             {activePromptId && (
-              <ProgressViewer promptId={activePromptId} onCompleted={handleProgressCompleted} onInterrupt={handleInterrupt} />
+              <ProgressViewer
+                promptId={activePromptId}
+                onTerminal={handleGenerationTerminal}
+                onInterrupt={handleInterrupt}
+                onViewGallery={handleViewGallery}
+                onDismiss={handleDismissProgress}
+              />
             )}
 
-            <GeneratorPanel onGenerate={handleGenerate} isGenerating={isSubmitting} stats={stats} />
+            <GeneratorPanel onGenerate={handleGenerate} isGenerating={isSubmitting} stats={stats} durationStats={durationStats} />
           </div>
         )}
 

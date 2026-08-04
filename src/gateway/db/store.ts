@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { eq, desc, like, or } from 'drizzle-orm';
 import { generations, GenerationRecord } from './schema.js';
-import { GatewaySettings } from '../types.js';
+import { GatewaySettings, DurationStat } from '../types.js';
 
 const DATA_DIR = path.join(process.cwd(), '.data');
 const LEGACY_GENERATIONS_FILE = path.join(DATA_DIR, 'generations.json');
@@ -193,6 +193,34 @@ export function updateSettings(newSettings: Partial<GatewaySettings>): GatewaySe
   currentSettings = { ...currentSettings, ...newSettings };
   persistSettings();
   return currentSettings;
+}
+
+const DURATION_SAMPLE_SIZE = 20;
+const KNOWN_MODEL_TYPES = ['image_fast', 'image_hd', 'video_short'];
+
+/**
+ * Real average render time per model, from the last N completed jobs actually recorded in
+ * this database - never a hardcoded guess. sampleCount is always included so callers (and
+ * the UI) can distinguish "no data yet" (avgDurationMs: null) from a genuine measurement.
+ */
+export function getDurationStats(): DurationStat[] {
+  return KNOWN_MODEL_TYPES.map((modelType) => {
+    const rows = db
+      .select({ durationMs: generations.durationMs })
+      .from(generations)
+      .where(eq(generations.modelType, modelType))
+      .orderBy(desc(generations.createdAt))
+      .limit(DURATION_SAMPLE_SIZE)
+      .all()
+      .filter((r) => r.durationMs > 0);
+
+    if (rows.length === 0) {
+      return { modelType, avgDurationMs: null, sampleCount: 0 };
+    }
+
+    const avgDurationMs = Math.round(rows.reduce((sum, r) => sum + r.durationMs, 0) / rows.length);
+    return { modelType, avgDurationMs, sampleCount: rows.length };
+  });
 }
 
 export function queryGenerations(query: string): GenerationRecord[] {

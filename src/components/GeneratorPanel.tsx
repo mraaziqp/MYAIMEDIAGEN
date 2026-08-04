@@ -1,11 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2 } from 'lucide-react';
-import { MediaType, AspectRatio, WorkflowParams, SystemStats } from '../types';
+import { MediaType, AspectRatio, WorkflowParams, SystemStats, DurationStat } from '../types';
 
 interface GeneratorPanelProps {
   onGenerate: (params: WorkflowParams) => void;
   isGenerating: boolean;
   stats: SystemStats | null;
+  durationStats: DurationStat[];
+}
+
+/**
+ * Real measured average for a model, formatted for the card badge - or an honest "No data
+ * yet" when it has never completed a run, never a guessed number.
+ */
+function formatDurationBadge(stats: DurationStat[], modelType: string): string {
+  const stat = stats.find((s) => s.modelType === modelType);
+  if (!stat || stat.avgDurationMs === null) return 'No data yet';
+  const seconds = stat.avgDurationMs / 1000;
+  const formatted = seconds >= 10 ? Math.round(seconds).toString() : seconds.toFixed(1);
+  return `~${formatted}s avg (${stat.sampleCount})`;
 }
 
 const PRESET_PROMPTS = [
@@ -39,6 +52,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   onGenerate,
   isGenerating,
   stats,
+  durationStats,
 }) => {
   const [prompt, setPrompt] = useState(
     'Cyberpunk neon alleyway in neo-Tokyo with rain reflections, glowing signs, cinematic 8k, photorealistic'
@@ -50,6 +64,8 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploadedFilename, setUploadedFilename] = useState<string | null>(null);
+  const [uploadedWidth, setUploadedWidth] = useState<number | null>(null);
+  const [uploadedHeight, setUploadedHeight] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -70,6 +86,8 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
     if (!file) return;
     setUploadError(null);
     setUploadedFilename(null);
+    setUploadedWidth(null);
+    setUploadedHeight(null);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(URL.createObjectURL(file));
     setIsUploading(true);
@@ -81,6 +99,8 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
       setUploadedFilename(data.filename);
+      setUploadedWidth(data.width || null);
+      setUploadedHeight(data.height || null);
     } catch (err: any) {
       setUploadError(err?.message || 'Failed to upload image');
     } finally {
@@ -92,6 +112,8 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
     setUploadedFilename(null);
+    setUploadedWidth(null);
+    setUploadedHeight(null);
     setUploadError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -130,6 +152,8 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
       seed: Number(seed),
       steps: customSteps ? Number(customSteps) : undefined,
       referenceImage: uploadedFilename || undefined,
+      referenceImageWidth: uploadedWidth || undefined,
+      referenceImageHeight: uploadedHeight || undefined,
     });
   };
 
@@ -200,7 +224,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
                   <span className="font-bold text-xs text-slate-200">Flux Schnell FP8</span>
                 </div>
                 <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-300 border border-amber-800">
-                  ~1.5s
+                  {formatDurationBadge(durationStats, 'image_fast')}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">4-Step Ultra Fast FP8 Quantized Image Generation</p>
@@ -222,7 +246,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
                   <span className="font-bold text-xs text-slate-200">SDXL HD FP8</span>
                 </div>
                 <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-950 text-cyan-300 border border-cyan-800">
-                  ~3.8s
+                  {formatDurationBadge(durationStats, 'image_hd')}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">25-Step High Detail Quality Diffusion Render</p>
@@ -244,7 +268,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
                   <span className="font-bold text-xs text-slate-200">Quantized SVD</span>
                 </div>
                 <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-rose-950 text-rose-300 border border-rose-800">
-                  ~8.5s
+                  {formatDurationBadge(durationStats, 'video_short')}
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">16-Frame Fluid Video Render (832x480 Optimized) - requires a reference image below</p>
@@ -270,8 +294,23 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
         {/* Reference Image Upload */}
         <div>
           <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block mb-2">
-            Reference Image {needsReferenceImage ? <span className="text-rose-400">(Required for Video)</span> : <span className="text-slate-500 normal-case font-normal">(optional - enables image-to-image)</span>}
+            Reference Image {needsReferenceImage ? <span className="text-rose-400">(Required for Video)</span> : <span className="text-slate-500 normal-case font-normal">(optional)</span>}
           </label>
+          {!needsReferenceImage && mediaType === 'image_hd' && (
+            <p className="text-[11px] text-slate-500 -mt-1 mb-2">
+              Face-ID regeneration: the whole photo is regenerated into your new scene (new
+              pose, lighting, everything) while an identity model keeps faces recognizable.
+              Slower than a normal render - the model streams extra face-ID weights too.
+            </p>
+          )}
+          {!needsReferenceImage && mediaType === 'image_fast' && (
+            <p className="text-[11px] text-slate-500 -mt-1 mb-2">
+              Face-safe scene swap: people in the photo are segmented out and pasted back
+              pixel-for-pixel onto a newly generated scene from your prompt - faces are never
+              re-diffused, so they stay exactly as uploaded but keep their original pose.
+              Switch to SDXL HD above for full regeneration with a different pose/angle.
+            </p>
+          )}
 
           <input
             ref={fileInputRef}

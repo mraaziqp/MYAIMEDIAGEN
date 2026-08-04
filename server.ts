@@ -6,6 +6,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import path from 'path';
 import multer from 'multer';
+import sharp from 'sharp';
 import { createServer as createViteServer } from 'vite';
 
 import {
@@ -14,6 +15,7 @@ import {
   getSettings,
   updateSettings,
   querySecondBrainIndex,
+  getDurationStats,
 } from './src/gateway/db/store.js';
 import { comfyService, JobInProgressError, OomGuardrailError } from './src/gateway/comfyService.js';
 import { getSystemStatsInternal, GpuTelemetryError } from './src/gateway/vramMonitor.js';
@@ -42,6 +44,7 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
   if (
     req.path.startsWith('/stream') ||
     req.path === '/system-stats' ||
+    req.path === '/duration-stats' ||
     req.path === '/ai-studio/function-call' ||
     req.path === '/generate' ||
     req.path === '/generations' ||
@@ -52,7 +55,8 @@ const authMiddleware = (req: Request, res: Response, next: NextFunction) => {
     req.path === '/free-vram' ||
     req.path === '/upload-image' ||
     req.path === '/tunnel-status' ||
-    req.path === '/session-token'
+    req.path === '/session-token' ||
+    req.path === '/current-job'
   ) {
     return next();
   }
@@ -98,6 +102,16 @@ app.get('/api/tunnel-status', (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/current-job
+ * Real in-flight promptId (or null), read straight from ComfyService's single-slot job
+ * tracker. Lets the dashboard reattach its live progress view after a page refresh instead
+ * of just losing track of a generation that is still genuinely running on the GPU.
+ */
+app.get('/api/current-job', (req: Request, res: Response) => {
+  res.json({ activePromptId: comfyService.getCurrentPromptId() });
+});
+
+/**
  * GET /api/session-token
  * Lets the dashboard auto-authenticate itself for protected actions (Settings) without the
  * user ever having to know or paste the token - but ONLY for requests that are genuinely
@@ -136,6 +150,20 @@ app.get('/api/system-stats', async (req: Request, res: Response) => {
       });
     }
     res.status(500).json({ error: 'Failed to fetch system stats', details: err?.message });
+  }
+});
+
+/**
+ * GET /api/duration-stats
+ * Real average render duration per model, computed from the last 20 completed jobs actually
+ * recorded in SQLite - never a hardcoded estimate. A model with no completed runs yet reports
+ * avgDurationMs: null so the UI can say "No data yet" instead of guessing.
+ */
+app.get('/api/duration-stats', (req: Request, res: Response) => {
+  try {
+    res.json({ stats: getDurationStats() });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to compute duration stats', details: err?.message });
   }
 });
 
@@ -206,7 +234,20 @@ app.post('/api/upload-image', upload.single('image'), async (req: Request, res: 
     }
 
     const data = (await comfyRes.json()) as { name: string; subfolder: string; type: string };
-    res.json({ success: true, filename: data.name, subfolder: data.subfolder, type: data.type });
+
+    // Real pixel dimensions, read from the same bytes just uploaded - the face-preserving
+    // scene-swap workflow (see workflowMapper.ts) needs these to size the generated
+    // background to exactly match the source photo for a pixel-accurate composite.
+    const metadata = await sharp(req.file.buffer).metadata();
+
+    res.json({
+      success: true,
+      filename: data.name,
+      subfolder: data.subfolder,
+      type: data.type,
+      width: metadata.width,
+      height: metadata.height,
+    });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to upload image to ComfyUI', details: err?.message });
   }
@@ -218,8 +259,20 @@ app.post('/api/upload-image', upload.single('image'), async (req: Request, res: 
  */
 app.post('/api/generate', async (req: Request, res: Response) => {
   try {
-    const { prompt, media_type, mediaType, aspect_ratio, aspectRatio, seed, steps, cfg, negativePrompt, referenceImage } =
-      req.body;
+    const {
+      prompt,
+      media_type,
+      mediaType,
+      aspect_ratio,
+      aspectRatio,
+      seed,
+      steps,
+      cfg,
+      negativePrompt,
+      referenceImage,
+      referenceImageWidth,
+      referenceImageHeight,
+    } = req.body;
 
     const finalPrompt = prompt || 'A futuristic high-tech AI research lab with glowing hologram displays';
     const finalMediaType: MediaType = (media_type || mediaType || 'image_fast') as MediaType;
@@ -243,6 +296,8 @@ app.post('/api/generate', async (req: Request, res: Response) => {
       cfg: cfg ? Number(cfg) : undefined,
       negativePrompt,
       referenceImage: referenceImage || undefined,
+      referenceImageWidth: referenceImageWidth ? Number(referenceImageWidth) : undefined,
+      referenceImageHeight: referenceImageHeight ? Number(referenceImageHeight) : undefined,
     };
 
     const result = await comfyService.queueGeneration(params);
