@@ -53,6 +53,15 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Vite's dev server otherwise rejects any request whose Host header isn't
+      // localhost-like (DNS-rebinding protection) - which blocks every request that
+      // arrives through the Cloudflare tunnel, whether the ephemeral *.trycloudflare.com
+      // quick-tunnel hostname or a configured stable CLOUDFLARE_TUNNEL_HOSTNAME, since
+      // neither is predictable/listable in advance. The real security boundary here is the
+      // gateway's own Bearer auth on /api (see server.ts) and this being a single-user,
+      // single-GPU local tool, not a multi-tenant host - so allowing every Host is correct
+      // for a tunnel-accessed dev server, not a gap.
+      allowedHosts: true as const,
     },
   };
 });
