@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Activity, Clock, Cpu, Octagon, CheckCircle2, AlertTriangle, ShieldCheck, XCircle, Download, Share2, Check, ImagePlus, X, WifiOff, RefreshCw } from 'lucide-react';
-import { StreamProgressEvent } from '../types';
+import { StreamProgressEvent, CloudJob } from '../types';
 import { filenameFromMediaUrl, shareMedia } from '../lib/mediaShare';
+import { jobToProgressEvent } from '../lib/jobMapping';
 
 const INITIAL_EVENT: Omit<StreamProgressEvent, 'promptId'> = {
   status: 'processing',
@@ -12,9 +13,11 @@ const INITIAL_EVENT: Omit<StreamProgressEvent, 'promptId'> = {
   percentage: 5,
 };
 
-// Capped exponential backoff for SSE reconnect attempts (1s, 2s, 4s, 8s, 8s...) - a dropped
-// connection (dev server restart, brief network blip) shouldn't just freeze the progress
-// card forever, but hammering the gateway on every retry isn't right either.
+// Vercel functions can't hold an SSE connection open, so live progress is short polling
+// against GET /api/jobs/:id instead. POLL_INTERVAL_MS is the steady-state cadence; a failed
+// poll backs off (1s, 2s, 4s, 8s, 8s...) instead of hammering the API during an outage, and
+// gives up after MAX_RECONNECT_ATTEMPTS in a row (the "Lost connection" banner + manual retry).
+const POLL_INTERVAL_MS = 1200;
 const MAX_RECONNECT_ATTEMPTS = 6;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 8000;
@@ -99,47 +102,40 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
   useEffect(() => {
     if (!promptId) return;
 
-    // Plain local variables, not React state - the reconnect/backoff logic below needs an
-    // always-current view of "have we already finished/given up" inside closures that are
-    // created once per connect() call, which stale state from the outer render wouldn't give.
+    // Plain local variables, not React state - the backoff logic below needs an
+    // always-current view of "have we already finished/given up" inside a closure that
+    // outlives individual renders, which stale state wouldn't give.
     let settled = false;
+    let cancelled = false;
     let attempts = 0;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let eventSource: EventSource;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const connect = () => {
-      eventSource = new EventSource(`/api/stream/${promptId}`);
+    const poll = async () => {
+      if (cancelled || settled) return;
 
-      eventSource.onopen = () => {
+      try {
+        const res = await fetch(`/api/jobs/${promptId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const job: CloudJob = await res.json();
+        const data = jobToProgressEvent(job);
+
         attempts = 0;
         setConnectionState('live');
-      };
-
-      eventSource.onmessage = (e) => {
-        try {
-          const data: StreamProgressEvent = JSON.parse(e.data);
-          if (data && data.status) {
-            setEvent(data);
-            setConnectionState('live');
-            if (typeof data.elapsedMs === 'number') {
-              serverElapsedRef.current = { ms: data.elapsedMs, receivedAt: Date.now() };
-              setElapsedSeconds(Math.round(data.elapsedMs / 1000));
-            }
-            if (data.status === 'completed' || data.status === 'failed' || data.status === 'interrupted') {
-              settled = true;
-              setIsDone(true);
-              onTerminal(data);
-              eventSource.close();
-            }
-          }
-        } catch (err) {
-          // ignore JSON parse error
+        setEvent(data);
+        if (typeof data.elapsedMs === 'number') {
+          serverElapsedRef.current = { ms: data.elapsedMs, receivedAt: Date.now() };
+          setElapsedSeconds(Math.round(data.elapsedMs / 1000));
         }
-      };
 
-      eventSource.onerror = () => {
-        if (settled) return;
-        eventSource.close();
+        if (data.status === 'completed' || data.status === 'failed' || data.status === 'interrupted') {
+          settled = true;
+          setIsDone(true);
+          onTerminal(data);
+          return;
+        }
+
+        if (!cancelled) pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+      } catch (err) {
         attempts += 1;
 
         if (attempts > MAX_RECONNECT_ATTEMPTS) {
@@ -149,18 +145,16 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
 
         setConnectionState('reconnecting');
         const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (attempts - 1), RECONNECT_MAX_DELAY_MS);
-        reconnectTimer = setTimeout(() => {
-          if (!settled) connect();
-        }, delay);
-      };
+        if (!cancelled) pollTimer = setTimeout(poll, delay);
+      }
     };
 
-    connect();
+    poll();
 
     return () => {
+      cancelled = true;
       settled = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      eventSource?.close();
+      if (pollTimer) clearTimeout(pollTimer);
     };
   }, [promptId, onTerminal, retryNonce]);
 

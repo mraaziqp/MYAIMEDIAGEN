@@ -1,6 +1,25 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { upload } from '@vercel/blob/client';
 import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2 } from 'lucide-react';
 import { MediaType, AspectRatio, WorkflowParams, SystemStats, DurationStat } from '../types';
+
+/** Read intrinsic pixel dimensions client-side - there's no server-side sharp step anymore
+ *  now that uploads go straight from the browser to Blob storage (see handleFileSelect). */
+function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      reject(new Error('Failed to read image dimensions'));
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  });
+}
 
 interface GeneratorPanelProps {
   onGenerate: (params: WorkflowParams) => void;
@@ -63,7 +82,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   const [customSteps, setCustomSteps] = useState<number | ''>('');
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [uploadedFilename, setUploadedFilename] = useState<string | null>(null);
+  const [uploadedImageUrl, setUploadedImageUrl] = useState<string | null>(null);
   const [uploadedWidth, setUploadedWidth] = useState<number | null>(null);
   const [uploadedHeight, setUploadedHeight] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -85,7 +104,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   const handleFileSelect = async (file: File | undefined) => {
     if (!file) return;
     setUploadError(null);
-    setUploadedFilename(null);
+    setUploadedImageUrl(null);
     setUploadedWidth(null);
     setUploadedHeight(null);
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -93,14 +112,16 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
     setIsUploading(true);
 
     try {
-      const formData = new FormData();
-      formData.append('image', file);
-      const res = await fetch('/api/upload-image', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Upload failed');
-      setUploadedFilename(data.filename);
-      setUploadedWidth(data.width || null);
-      setUploadedHeight(data.height || null);
+      // Uploads straight from the browser to Vercel Blob (api/upload-image.ts only issues a
+      // short-lived upload token) - avoids proxying file bytes through a serverless
+      // function, which would cap reference images well below what a phone photo can be.
+      const [blob, dims] = await Promise.all([
+        upload(file.name, file, { access: 'public', handleUploadUrl: '/api/upload-image' }),
+        readImageDimensions(file),
+      ]);
+      setUploadedImageUrl(blob.url);
+      setUploadedWidth(dims.width);
+      setUploadedHeight(dims.height);
     } catch (err: any) {
       setUploadError(err?.message || 'Failed to upload image');
     } finally {
@@ -111,7 +132,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   const handleRemoveImage = () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
-    setUploadedFilename(null);
+    setUploadedImageUrl(null);
     setUploadedWidth(null);
     setUploadedHeight(null);
     setUploadError(null);
@@ -134,7 +155,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   // SVD is image-to-video - there is no text-to-video path, so a reference image isn't
   // optional for this model the way it is (as an img2img nudge) for Flux/SDXL.
   const needsReferenceImage = mediaType === 'video_short';
-  const referenceImageMissing = needsReferenceImage && !uploadedFilename;
+  const referenceImageMissing = needsReferenceImage && !uploadedImageUrl;
 
   const gpuUnavailable = !stats;
   const vramCritical = !!stats && freeVramMb < requiredVramMb;
@@ -151,7 +172,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
       aspectRatio,
       seed: Number(seed),
       steps: customSteps ? Number(customSteps) : undefined,
-      referenceImage: uploadedFilename || undefined,
+      referenceImage: uploadedImageUrl || undefined,
       referenceImageWidth: uploadedWidth || undefined,
       referenceImageHeight: uploadedHeight || undefined,
     });
@@ -327,12 +348,12 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
                 {isUploading ? (
                   <span className="text-xs text-cyan-300 flex items-center space-x-1.5">
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Uploading to ComfyUI...</span>
+                    <span>Uploading...</span>
                   </span>
-                ) : uploadedFilename ? (
+                ) : uploadedImageUrl ? (
                   <span className="text-xs text-emerald-400 flex items-center space-x-1.5">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span className="truncate">{uploadedFilename}</span>
+                    <span className="truncate">Uploaded ({uploadedWidth}×{uploadedHeight})</span>
                   </span>
                 ) : (
                   <span className="text-xs text-rose-400">{uploadError || 'Upload failed'}</span>

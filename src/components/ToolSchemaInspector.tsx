@@ -53,29 +53,32 @@ export const ToolSchemaInspector: React.FC<ToolSchemaInspectorProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Dispatches through the same authenticated POST /api/jobs the Studio Generator itself
+  // uses (the browser's session cookie rides along automatically) - a real standalone AI
+  // Studio webhook with its own external-agent auth scheme is a separate feature this app
+  // doesn't build out, so this panel is a dashboard-side tester, not a public integration point.
   const handleRunFunctionTest = async () => {
     setIsExecuting(true);
     try {
-      const res = await fetch('/api/ai-studio/function-call', {
+      const res = await fetch('/api/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: 'generate_local_media',
-          args: {
-            prompt: testPrompt,
-            media_type: testMediaType,
-            aspect_ratio: testAspectRatio,
-          },
+          prompt: testPrompt,
+          mediaType: testMediaType,
+          aspectRatio: testAspectRatio,
         }),
       });
 
       const data = await res.json();
       setLastResponse(data);
-      onTriggerFunctionCall({
-        prompt: testPrompt,
-        media_type: testMediaType,
-        aspect_ratio: testAspectRatio,
-      });
+      if (res.ok) {
+        onTriggerFunctionCall({
+          prompt: testPrompt,
+          media_type: testMediaType,
+          aspect_ratio: testAspectRatio,
+        });
+      }
     } catch (err: any) {
       setLastResponse({ error: 'Function Call Execution Failed', details: err?.message });
     } finally {
@@ -134,7 +137,7 @@ export const ToolSchemaInspector: React.FC<ToolSchemaInspectorProps> = ({
           </div>
           <div>
             <h3 className="text-base font-bold text-slate-100">Simulate AI Studio Function Execution</h3>
-            <p className="text-xs text-slate-400">Test payload delivery directly to Express Gateway API</p>
+            <p className="text-xs text-slate-400">Dispatches a real job through POST /api/jobs, same as the Studio Generator</p>
           </div>
         </div>
 

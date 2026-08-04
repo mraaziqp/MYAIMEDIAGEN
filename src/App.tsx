@@ -6,67 +6,46 @@ import { GeneratorPanel } from './components/GeneratorPanel';
 import { ProgressViewer } from './components/ProgressViewer';
 import { MediaGallery } from './components/MediaGallery';
 import { ToolSchemaInspector } from './components/ToolSchemaInspector';
-import { TunnelSettings } from './components/TunnelSettings';
+import { WorkerStatus } from './components/WorkerStatus';
 import { WorkflowInspector } from './components/WorkflowInspector';
-import { SystemStats, GenerationRecord, GatewaySettings, WorkflowParams, StreamProgressEvent, DurationStat } from './types';
-
-const DEFAULT_AUTH_TOKEN = 'sec_rtx3060ti_gateway_key_9988';
+import { SystemStats, CloudJob, WorkflowParams, StreamProgressEvent, DurationStat } from './types';
 
 type Tab = 'generate' | 'gallery' | 'tools' | 'workflows' | 'settings';
 
-interface SettingsResponse {
-  comfyUrl: string;
-  autoOomCheck?: boolean;
-  vramThresholdMb: number;
-  maskedAuthToken: string;
-  authTokenHash: string;
-  maskedEncryptionSecret: string;
+const ACTIVE_JOB_STORAGE_KEY = 'activePromptId';
+
+function readStoredActiveJobId(): string | null {
+  try {
+    return localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+  } catch {
+    return null;
+  }
 }
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('generate');
 
-  // Real GPU/host telemetry - null means no reading has succeeded yet, never a mocked value.
+  // Real GPU/host telemetry sourced from the worker's last heartbeat (see api/system-stats.ts)
+  // - null means no reading has succeeded yet, never a mocked value.
   const [stats, setStats] = useState<SystemStats | null>(null);
-  const [isRefreshingStats, setIsRefreshingStats] = useState(false);
 
-  const [settingsResponse, setSettingsResponse] = useState<SettingsResponse | null>(null);
-  const [isTestingConnection, setIsTestingConnection] = useState(false);
-  const [isFreeingVram, setIsFreeingVram] = useState(false);
-  // The raw bearer token is never sent back by the server over the public tunnel (only
-  // masked) - but for requests that are genuinely local (not proxied through the tunnel),
-  // /api/session-token hands it over so the dashboard just works without the user ever
-  // needing to see or paste it. Starts from the compiled-in default (correct until a custom
-  // GATEWAY_AUTH_TOKEN is set) and is updated the moment a Settings save succeeds too.
-  const [authToken, setAuthToken] = useState(DEFAULT_AUTH_TOKEN);
+  const [jobs, setJobs] = useState<CloudJob[]>([]);
 
-  useEffect(() => {
-    fetch('/api/session-token')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.token) setAuthToken(data.token);
-      })
-      .catch(() => {
-        // Not local (e.g. opened via the public tunnel) - keep the default; Settings saves
-        // will 401 until the real token is entered manually, which is the correct behavior.
-      });
+  // Persisted so a page refresh (or opening the dashboard from a different device) resumes
+  // polling the same job instead of losing track of it - there's no local server session to
+  // "reattach" to anymore, this is the cloud-hosted equivalent of that idea.
+  const [activePromptId, setActivePromptIdState] = useState<string | null>(readStoredActiveJobId);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(() => !!readStoredActiveJobId());
 
-    // Reattach to a generation that's genuinely still running on the GPU after a page
-    // refresh, instead of just losing the live view and looking like the job vanished.
-    fetch('/api/current-job')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.activePromptId) {
-          setActivePromptId(data.activePromptId);
-          setIsSubmitting(true);
-        }
-      })
-      .catch(() => {});
+  const setActivePromptId = useCallback((id: string | null) => {
+    setActivePromptIdState(id);
+    try {
+      if (id) localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, id);
+      else localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+    } catch {
+      // Best-effort - worst case a refresh just loses the reattach, not a functional break.
+    }
   }, []);
-
-  const [generations, setGenerations] = useState<GenerationRecord[]>([]);
-  const [activePromptId, setActivePromptId] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [toast, setToast] = useState<{ type: 'info' | 'success' | 'error'; message: string } | null>(null);
 
@@ -76,7 +55,6 @@ export default function App() {
   }, []);
 
   const fetchTelemetry = useCallback(async () => {
-    setIsRefreshingStats(true);
     try {
       const res = await fetch('/api/system-stats');
       const data = await res.json();
@@ -84,44 +62,27 @@ export default function App() {
         setStats(data as SystemStats);
       } else {
         setStats(null);
-        showToast('error', data?.details || data?.error || `GPU telemetry unavailable (HTTP ${res.status})`);
       }
-    } catch (err: any) {
+    } catch {
       setStats(null);
-      showToast('error', err?.message || 'Failed to reach the gateway for GPU telemetry.');
-    } finally {
-      setIsRefreshingStats(false);
-    }
-  }, [showToast]);
-
-  const fetchGenerations = useCallback(async () => {
-    try {
-      const res = await fetch('/api/generations?limit=100');
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.records) setGenerations(data.records);
-      }
-    } catch (err) {
-      console.warn('Failed to fetch generations:', err);
     }
   }, []);
 
-  const fetchSettings = useCallback(async () => {
+  const fetchJobs = useCallback(async () => {
     try {
-      const res = await fetch('/api/settings');
+      const res = await fetch('/api/jobs?limit=100');
       if (res.ok) {
-        const data: SettingsResponse = await res.json();
-        setSettingsResponse(data);
+        const data = await res.json();
+        if (data?.records) setJobs(data.records);
       }
     } catch (err) {
-      console.warn('Failed to fetch settings:', err);
+      console.warn('Failed to fetch jobs:', err);
     }
   }, []);
 
   // Real average render duration per model, from actually-completed jobs (see
-  // getDurationStats in db/store.ts) - drives the GeneratorPanel's timing badges instead of
-  // the hardcoded guesses that used to live there. Refetched after every generation
-  // completes (see handleGenerationTerminal) so the average stays current.
+  // getDurationStats in db/store.pg.ts) - drives the GeneratorPanel's timing badges instead
+  // of guessed numbers. Refetched after every generation completes.
   const [durationStats, setDurationStats] = useState<DurationStat[]>([]);
   const fetchDurationStats = useCallback(async () => {
     try {
@@ -137,15 +98,12 @@ export default function App() {
 
   useEffect(() => {
     fetchTelemetry();
-    fetchGenerations();
-    fetchSettings();
+    fetchJobs();
     fetchDurationStats();
-  }, [fetchTelemetry, fetchGenerations, fetchSettings, fetchDurationStats]);
+  }, [fetchTelemetry, fetchJobs, fetchDurationStats]);
 
-  // Poll VRAM/RAM telemetry faster while a job is actually running (real-time GPU movement
-  // matters most exactly then) and back off to a slower idle cadence otherwise, rather than
-  // a single fixed interval that's either too slow during a render or wastes nvidia-smi
-  // shell-outs at idle.
+  // Poll worker telemetry faster while a job is actually running (real-time GPU movement
+  // matters most exactly then) and back off to a slower idle cadence otherwise.
   useEffect(() => {
     const intervalMs = isSubmitting || activePromptId ? 2000 : 6000;
     const interval = setInterval(fetchTelemetry, intervalMs);
@@ -155,47 +113,39 @@ export default function App() {
   const handleGenerate = async (params: WorkflowParams) => {
     setIsSubmitting(true);
     try {
-      const res = await fetch('/api/generate', {
+      const res = await fetch('/api/jobs', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           prompt: params.prompt,
           mediaType: params.mediaType,
-          modelType: params.mediaType,
           aspectRatio: params.aspectRatio,
           seed: params.seed,
           steps: params.steps,
           cfg: params.cfg,
           referenceImage: params.referenceImage,
+          referenceImageWidth: params.referenceImageWidth,
+          referenceImageHeight: params.referenceImageHeight,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Generation trigger failed');
 
-      setActivePromptId(data.promptId);
-      showToast('info', `Queued ${params.mediaType} render on the RTX 3060 Ti...`);
-      fetchGenerations();
+      setActivePromptId(data.jobId);
+      showToast('info', `Queued ${params.mediaType} render - your PC will pick it up shortly...`);
+      fetchJobs();
     } catch (err: any) {
       showToast('error', err?.message || 'Generation submission failed');
-    } finally {
       setIsSubmitting(false);
     }
   };
 
   const handleInterrupt = async () => {
+    if (!activePromptId) return;
     try {
-      const res = await fetch('/api/interrupt', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await fetch(`/api/jobs/${activePromptId}/interrupt`, { method: 'POST' });
       if (res.ok) {
-        showToast('info', 'GPU interrupt command dispatched.');
-        // The gateway's SSE stream emits the 'interrupted' terminal event itself once the
-        // job is actually halted - handleGenerationTerminal picks it up from there, so the
-        // progress card stays visible with an honest "Halted" state instead of just vanishing.
+        showToast('info', 'Interrupt requested - the worker will stop the GPU job on its next check-in.');
       } else {
         const data = await res.json().catch(() => ({}));
         showToast('error', data?.error || 'Failed to send interrupt signal.');
@@ -205,13 +155,10 @@ export default function App() {
     }
   };
 
-  // Fires once for any terminal SSE state (completed/failed/interrupted). Deliberately does
-  // NOT clear activePromptId - the progress card stays mounted showing its final state (with
-  // the completed media preview + Download/Share/View-in-Gallery, or the failure reason) until
-  // the user explicitly dismisses it via handleDismissProgress/handleViewGallery, or starts a
-  // new render. Previously this cleared activePromptId immediately, which unmounted the card
-  // in the same render pass the 'completed' event arrived in, so the finished-render UI never
-  // actually got a chance to show.
+  // Fires once for any terminal state (completed/failed/interrupted). Deliberately does NOT
+  // clear activePromptId - the progress card stays mounted showing its final state until the
+  // user explicitly dismisses it via handleDismissProgress/handleViewGallery, or starts a
+  // new render.
   const handleGenerationTerminal = useCallback(
     (event: StreamProgressEvent) => {
       setIsSubmitting(false);
@@ -222,100 +169,25 @@ export default function App() {
       } else if (event.status === 'interrupted') {
         showToast('info', 'GPU job halted.');
       }
-      fetchGenerations();
+      fetchJobs();
       fetchTelemetry();
       if (event.status === 'completed') fetchDurationStats();
     },
-    [showToast, fetchGenerations, fetchTelemetry, fetchDurationStats]
+    [showToast, fetchJobs, fetchTelemetry, fetchDurationStats]
   );
 
   const handleDismissProgress = useCallback(() => {
     setActivePromptId(null);
-  }, []);
+  }, [setActivePromptId]);
 
   const handleViewGallery = useCallback(() => {
     setActivePromptId(null);
     setActiveTab('gallery');
-  }, []);
-
-  const handleUpdateSettings = async (newSettings: Partial<GatewaySettings>) => {
-    try {
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`,
-        },
-        body: JSON.stringify(newSettings),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update settings');
-
-      if (newSettings.authToken && newSettings.authToken.trim() !== '') {
-        setAuthToken(newSettings.authToken);
-      }
-      showToast('success', 'Gateway settings saved.');
-      fetchSettings();
-      fetchTelemetry();
-    } catch (err: any) {
-      showToast('error', err?.message || 'Failed to save settings');
-      throw err;
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setIsTestingConnection(true);
-    try {
-      const res = await fetch('/api/system-stats');
-      const data = await res.json();
-      if (res.ok) {
-        setStats(data as SystemStats);
-        showToast(
-          data.status === 'ONLINE' ? 'success' : 'error',
-          data.status === 'ONLINE'
-            ? `ComfyUI reachable at ${data.comfyUrl} - ${data.vramFreeMb} MB VRAM free.`
-            : `GPU telemetry read OK, but ComfyUI is not reachable at ${data.comfyUrl}.`
-        );
-      } else {
-        setStats(null);
-        showToast('error', data?.details || data?.error || 'GPU telemetry unavailable.');
-      }
-    } catch (err: any) {
-      showToast('error', err?.message || 'Connection test failed.');
-    } finally {
-      setIsTestingConnection(false);
-    }
-  };
-
-  const handleFreeVram = async () => {
-    setIsFreeingVram(true);
-    try {
-      const res = await fetch('/api/free-vram', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to free VRAM');
-      setStats(data.stats as SystemStats);
-      showToast('success', `VRAM freed - ${data.stats.vramFreeMb} MB now available.`);
-    } catch (err: any) {
-      showToast('error', err?.message || 'Failed to free VRAM');
-    } finally {
-      setIsFreeingVram(false);
-    }
-  };
+  }, [setActivePromptId]);
 
   const handleFunctionCallTriggered = () => {
     fetchTelemetry();
-    setTimeout(fetchGenerations, 1500);
-  };
-
-  const gatewaySettings: GatewaySettings = {
-    comfyUrl: settingsResponse?.comfyUrl || '',
-    authToken: '',
-    encryptionSecret: '',
-    autoOomCheck: settingsResponse?.autoOomCheck ?? true,
-    vramThresholdMb: settingsResponse?.vramThresholdMb ?? 2000,
+    setTimeout(fetchJobs, 1500);
   };
 
   return (
@@ -344,7 +216,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 pb-16">
         {activeTab === 'generate' && (
           <div className="space-y-6">
-            <VramGauge stats={stats} onRefresh={fetchTelemetry} onFreeVram={handleFreeVram} isFreeingVram={isFreeingVram} />
+            <VramGauge stats={stats} onRefresh={fetchTelemetry} />
 
             {activePromptId && (
               <ProgressViewer
@@ -360,22 +232,13 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'gallery' && <MediaGallery records={generations} onRefresh={fetchGenerations} />}
+        {activeTab === 'gallery' && <MediaGallery records={jobs} onRefresh={fetchJobs} />}
 
         {activeTab === 'tools' && <ToolSchemaInspector onTriggerFunctionCall={handleFunctionCallTriggered} />}
 
         {activeTab === 'workflows' && <WorkflowInspector />}
 
-        {activeTab === 'settings' && (
-          <TunnelSettings
-            settings={gatewaySettings}
-            maskedAuthToken={settingsResponse?.maskedAuthToken}
-            maskedEncryptionSecret={settingsResponse?.maskedEncryptionSecret}
-            onUpdateSettings={handleUpdateSettings}
-            onTestConnection={handleTestConnection}
-            isTestingConnection={isTestingConnection}
-          />
-        )}
+        {activeTab === 'settings' && <WorkerStatus stats={stats} onRefresh={fetchTelemetry} />}
       </main>
     </div>
   );

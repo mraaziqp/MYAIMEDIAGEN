@@ -1,15 +1,13 @@
 import React from 'react';
-import { Cpu, AlertTriangle, ShieldCheck, ShieldAlert, Activity, HardDrive, Zap } from 'lucide-react';
+import { Cpu, AlertTriangle, ShieldCheck, ShieldAlert, Activity, HardDrive } from 'lucide-react';
 import { SystemStats } from '../types';
 
 interface VramGaugeProps {
   stats: SystemStats | null;
   onRefresh: () => void;
-  onFreeVram: () => void;
-  isFreeingVram: boolean;
 }
 
-export const VramGauge: React.FC<VramGaugeProps> = ({ stats, onRefresh, onFreeVram, isFreeingVram }) => {
+export const VramGauge: React.FC<VramGaugeProps> = ({ stats, onRefresh }) => {
   if (!stats) {
     return (
       <div className="bg-slate-900/90 border border-rose-800/60 rounded-2xl p-5 shadow-xl text-slate-100">
@@ -19,8 +17,8 @@ export const VramGauge: React.FC<VramGaugeProps> = ({ stats, onRefresh, onFreeVr
               <AlertTriangle className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-200">GPU Telemetry Unavailable</h3>
-              <p className="text-xs text-slate-400">nvidia-smi could not be read - no VRAM data to display</p>
+              <h3 className="text-sm font-bold text-slate-200">Worker Offline</h3>
+              <p className="text-xs text-slate-400">No recent heartbeat from your PC - start the local worker to see real GPU telemetry here</p>
             </div>
           </div>
           <button
@@ -55,22 +53,13 @@ export const VramGauge: React.FC<VramGaugeProps> = ({ stats, onRefresh, onFreeVr
           </div>
           <div>
             <h3 className="text-sm font-bold text-slate-200">{stats.device}</h3>
-            <p className="text-xs text-slate-400 font-mono">{stats.comfyUrl}</p>
+            <p className="text-xs text-slate-400 font-mono">
+              {stats.status === 'ONLINE' ? 'ComfyUI connected on your PC' : 'ComfyUI not reachable by the worker'}
+            </p>
           </div>
         </div>
 
         <div className="flex items-center space-x-2">
-          {stats.status === 'ONLINE' && (
-            <button
-              onClick={onFreeVram}
-              disabled={isFreeingVram}
-              title="Unload models from ComfyUI to free VRAM"
-              className="px-3 py-1.5 rounded-lg bg-amber-950 hover:bg-amber-900 disabled:opacity-50 disabled:cursor-not-allowed text-amber-300 border border-amber-800 text-xs font-medium transition-all flex items-center space-x-1.5"
-            >
-              <Zap className={`w-3.5 h-3.5 text-amber-400 ${isFreeingVram ? 'animate-pulse' : ''}`} />
-              <span>{isFreeingVram ? 'Freeing...' : 'Free VRAM'}</span>
-            </button>
-          )}
           <button
             onClick={onRefresh}
             className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-medium transition-all flex items-center space-x-1.5"

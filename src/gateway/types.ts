@@ -143,6 +143,8 @@ export interface HardwareTelemetry {
   device: string;
   comfyUrl: string;
   isTunnelConnected: boolean;
+  /** ISO timestamp of the worker's last heartbeat - absent only if it has never reported in. */
+  lastSeenAt?: string;
   preflightCheck: {
     passed: boolean;
     recommendedMediaType: MediaType[];
@@ -185,6 +187,45 @@ export interface DurationStat {
   modelType: string;
   avgDurationMs: number | null;
   sampleCount: number;
+}
+
+/**
+ * Plain-interface mirror of the Postgres `jobs` row (schema.pg.ts) for frontend use - kept
+ * separate from that file (rather than importing it directly) so the browser bundle never
+ * pulls in drizzle-orm/pg-core table builders just for a type.
+ */
+export interface CloudJob {
+  id: string;
+  prompt: string;
+  encryptedPrompt: string | null;
+  promptHash: string;
+  modelType: string;
+  aspectRatio: string;
+  mediaType: string;
+  seed: number;
+  steps: number;
+  cfg: number;
+  samplerName: string;
+  referenceImageUrl: string | null;
+  referenceImageWidth: number | null;
+  referenceImageHeight: number | null;
+  status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'interrupted';
+  percentage: number;
+  step: number | null;
+  maxSteps: number | null;
+  node: string | null;
+  nodeTitle: string | null;
+  etaSeconds: number | null;
+  elapsedMs: number | null;
+  vramCurrentMb: number | null;
+  vramPeakMb: number | null;
+  mediaUrl: string | null;
+  durationMs: number;
+  error: string | null;
+  interruptRequested: boolean;
+  createdAt: string;
+  claimedAt: string | null;
+  completedAt: string | null;
 }
 
 export interface GatewaySettings {

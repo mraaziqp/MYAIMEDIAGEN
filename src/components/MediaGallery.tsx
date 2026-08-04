@@ -17,11 +17,11 @@ import {
   HardDrive,
   AlertOctagon,
 } from 'lucide-react';
-import { GenerationRecord } from '../types';
+import { CloudJob } from '../types';
 import { filenameFromMediaUrl, shareMedia } from '../lib/mediaShare';
 
 interface MediaGalleryProps {
-  records: GenerationRecord[];
+  records: CloudJob[];
   onRefresh: () => void;
 }
 
@@ -29,10 +29,10 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
   const [filterType, setFilterType] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [selectedRecord, setSelectedRecord] = useState<GenerationRecord | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<CloudJob | null>(null);
   const [shareStateById, setShareStateById] = useState<Record<string, 'sharing' | 'shared' | 'copied'>>({});
 
-  const handleShare = async (item: GenerationRecord) => {
+  const handleShare = async (item: CloudJob) => {
     setShareStateById((s) => ({ ...s, [item.id]: 'sharing' }));
     const result = await shareMedia(item.mediaUrl);
     if (result === 'shared' || result === 'copied') {
@@ -354,14 +354,14 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
 
               <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between">
                 <div>
-                  <span className="text-slate-400 text-[10px] font-sans block">Local PC Disk Path:</span>
+                  <span className="text-slate-400 text-[10px] font-sans block">Media Storage:</span>
                   <span className="text-slate-300 text-xs flex items-center space-x-1 mt-0.5">
                     <HardDrive className="w-3.5 h-3.5 text-indigo-400" />
-                    <span>{selectedRecord.localFilePath}</span>
+                    <span>Vercel Blob (persists even when your PC is off)</span>
                   </span>
                 </div>
                 <span className="px-2 py-0.5 rounded bg-indigo-950 text-indigo-300 border border-indigo-800 text-[10px]">
-                  RTX 3060 Ti
+                  Cloud
                 </span>
               </div>
             </div>

@@ -1,0 +1,17 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { rejectUnlessWorker } from '../../src/gateway/cloudAuth.js';
+import { claimNextJob } from '../../src/gateway/db/store.pg.js';
+
+/**
+ * Polled by the local worker every ~2s (see worker/index.ts). This is the only inbound
+ * direction in the whole architecture - the worker always initiates, the cloud never calls
+ * out to the PC - so no tunnel or open port on the PC is needed for generation to work.
+ */
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  if (rejectUnlessWorker(req, res)) return;
+  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+  const job = await claimNextJob();
+  if (!job) return res.status(204).end();
+  res.status(200).json(job);
+}

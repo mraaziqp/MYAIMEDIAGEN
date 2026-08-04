@@ -14,3 +14,5 @@ coverage/
 
 # Stale full-project export snapshot, not source of truth
 *.zip
+
+.vercel
