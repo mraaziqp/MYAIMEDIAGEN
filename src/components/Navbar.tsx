@@ -19,10 +19,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   onFreeVram,
   isFreeingVram,
 }) => {
-  const isOnline = systemStats?.status === 'ONLINE';
+  const isOnline = systemStats?.status === 'ONLINE' || (systemStats?.online === true && (systemStats?.vramTotalMb ?? 0) > 0);
   const vramPct = systemStats?.vramUsagePercent || 0;
-  const freeVramGb = systemStats ? (systemStats.vramFreeMb / 1024).toFixed(1) : null;
-  const isLowVram = systemStats ? systemStats.vramFreeMb < 3800 : false;
+  const freeVramGb = systemStats && isOnline ? (systemStats.vramFreeMb / 1024).toFixed(1) : null;
+  const isLowVram = systemStats && isOnline ? systemStats.vramFreeMb < 3800 : false;
 
   return (
     <header className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 text-slate-100 shadow-md">
@@ -137,7 +137,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
 
             {/* VRAM Meter & Quick Clear Action */}
-            {systemStats && (
+            {systemStats && isOnline && (
               <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-slate-900/90 border border-slate-800 text-xs text-slate-300 shadow-inner">
                 <span className="text-slate-400 text-[11px] font-medium hidden sm:inline">VRAM</span>
                 <div className="w-12 sm:w-16 bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">

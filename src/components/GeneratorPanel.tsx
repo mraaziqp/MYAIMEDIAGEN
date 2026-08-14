@@ -161,8 +161,9 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   const needsReferenceImage = mediaType === 'video_short';
   const referenceImageMissing = needsReferenceImage && !uploadedImageUrl;
 
-  const gpuUnavailable = !stats;
-  const vramCritical = !!stats && freeVramMb < requiredVramMb;
+  const isOnline = stats?.status === 'ONLINE' || (stats?.online === true && stats?.vramTotalMb > 0);
+  const gpuUnavailable = !stats || !isOnline;
+  const vramCritical = !!stats && isOnline && freeVramMb < requiredVramMb;
   const submitBlocked =
     isGenerating || !prompt.trim() || gpuUnavailable || vramCritical || isUploading || referenceImageMissing;
 

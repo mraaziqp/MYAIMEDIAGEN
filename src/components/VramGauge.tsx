@@ -15,7 +15,8 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
   onFreeVram,
   isFreeingVram = false,
 }) => {
-  if (!stats) {
+  const isOnline = stats?.status === 'ONLINE' || (stats?.online === true && stats?.vramTotalMb > 0);
+  if (!stats || !isOnline) {
     return (
       <div className="bg-slate-900/90 border border-rose-800/60 rounded-2xl p-5 sm:p-6 shadow-xl text-slate-100">
         <div className="flex items-center justify-between mb-3">
@@ -26,7 +27,9 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
             <div>
               <h3 className="text-sm font-bold text-slate-200">Local PC Worker Offline</h3>
               <p className="text-xs text-slate-400">
-                No recent heartbeat from your PC - start the local worker to stream real GPU telemetry and render media.
+                {stats?.lastSeenAt
+                  ? `Last heartbeat from your PC was ${Math.max(0, Math.round((Date.now() - new Date(stats.lastSeenAt).getTime()) / 1000))}s ago - start the local worker to stream real GPU telemetry and render media.`
+                  : 'No recent heartbeat from your PC - start the local worker to stream real GPU telemetry and render media.'}
               </p>
             </div>
           </div>

@@ -30,7 +30,7 @@ export const WorkerStatus: React.FC<WorkerStatusProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isOnline = stats?.status === 'ONLINE' || (!!stats && stats.vramTotalMb > 0);
+  const isOnline = stats?.status === 'ONLINE' || (stats?.online === true && (stats?.vramTotalMb ?? 0) > 0);
   const lastSeenLabel = stats?.lastSeenAt
     ? `${Math.max(0, Math.round((Date.now() - new Date(stats.lastSeenAt).getTime()) / 1000))}s ago`
     : null;

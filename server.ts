@@ -144,9 +144,28 @@ app.get('/api/system-stats', async (req: Request, res: Response) => {
     res.json(stats);
   } catch (err: any) {
     if (err instanceof GpuTelemetryError) {
-      return res.status(503).json({
+      return res.status(200).json({
+        online: false,
+        status: 'OFFLINE',
         error: 'GPU telemetry unavailable',
         details: err.message,
+        vramTotalMb: 0,
+        vramUsedMb: 0,
+        vramFreeMb: 0,
+        vramUsagePercent: 0,
+        ramUsedMb: 0,
+        ramTotalMb: 0,
+        systemRamTotalMb: 0,
+        systemRamFreeMb: 0,
+        oomRisk: false,
+        device: 'Offline',
+        comfyUrl: '',
+        isTunnelConnected: false,
+        preflightCheck: {
+          passed: false,
+          recommendedMediaType: [],
+          warnings: ['GPU telemetry unavailable: ' + err.message],
+        },
       });
     }
     res.status(500).json({ error: 'Failed to fetch system stats', details: err?.message });
