@@ -161,21 +161,21 @@ export const Navbar: React.FC<NavbarProps> = ({
                   {vramPct}%
                 </span>
 
-                {/* Quick Clear VRAM button in header */}
+                {/* Quick Free VRAM button in header */}
                 {onFreeVram && (
                   <button
                     onClick={onFreeVram}
                     disabled={isFreeingVram}
-                    className={`ml-1 p-1 rounded-md transition-all text-xs flex items-center ${
+                    className={`ml-1.5 px-2.5 py-1 rounded-lg transition-all text-xs font-bold flex items-center space-x-1 shadow active:scale-95 ${
                       isLowVram
-                        ? 'bg-rose-900/80 hover:bg-rose-800 text-rose-200 border border-rose-700/60 animate-pulse'
-                        : 'bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700'
+                        ? 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white animate-pulse ring-1 ring-rose-400/50'
+                        : 'bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white border border-slate-700'
                     }`}
                     title="Unload models & clear PyTorch CUDA VRAM cache"
                   >
-                    <Trash2 className={`w-3 h-3 ${isFreeingVram ? 'animate-spin text-cyan-400' : ''}`} />
-                    <span className="hidden xl:inline ml-1 text-[10px] font-semibold">
-                      {isFreeingVram ? 'Purging...' : 'Clear'}
+                    <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
+                    <span className="text-[10px] sm:text-[11px] font-bold">
+                      {isFreeingVram ? 'FREEING...' : 'FREE VRAM'}
                     </span>
                   </button>
                 )}

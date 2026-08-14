@@ -462,10 +462,10 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
                 type="button"
                 onClick={onFreeVram}
                 disabled={isFreeingVram}
-                className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white font-bold rounded-lg text-xs shrink-0 flex items-center justify-center space-x-1.5 transition-all shadow-md active:scale-95 disabled:opacity-50"
+                className="px-4 py-2 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white font-extrabold rounded-xl text-xs shrink-0 flex items-center justify-center space-x-2 transition-all shadow-lg active:scale-95 disabled:opacity-50 ring-2 ring-rose-400/30 tracking-wide"
               >
-                <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
-                <span>{isFreeingVram ? 'Purging...' : 'Clear VRAM Now'}</span>
+                <Trash2 className={`w-4 h-4 ${isFreeingVram ? 'animate-spin' : ''}`} />
+                <span>{isFreeingVram ? 'FREEING VRAM...' : 'FREE VRAM NOW'}</span>
               </button>
             )}
           </div>

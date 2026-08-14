@@ -55,10 +55,10 @@ export const WorkerStatus: React.FC<WorkerStatusProps> = ({
             <button
               onClick={onFreeVram}
               disabled={isFreeingVram}
-              className="px-4 py-2 rounded-xl bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-xs font-bold transition-all flex items-center space-x-2 shadow-md active:scale-95 disabled:opacity-50"
+              className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white text-xs font-bold transition-all flex items-center space-x-2 shadow-md active:scale-95 disabled:opacity-50 ring-2 ring-rose-400/30"
             >
               <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
-              <span>{isFreeingVram ? 'Purging VRAM...' : 'Clear VRAM Cache'}</span>
+              <span>{isFreeingVram ? 'FREEING VRAM...' : 'FREE VRAM CACHE'}</span>
             </button>
           )}
 

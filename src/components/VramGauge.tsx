@@ -79,27 +79,27 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
           </div>
         </div>
 
-        {/* Action Buttons: Ping & Clear VRAM */}
-        <div className="flex items-center space-x-2 self-end sm:self-auto">
+        {/* Action Buttons: FREE VRAM & Ping */}
+        <div className="flex items-center space-x-2.5 self-end sm:self-auto">
           {onFreeVram && (
             <button
               onClick={onFreeVram}
               disabled={isFreeingVram || stats.status !== 'ONLINE'}
-              className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all flex items-center space-x-1.5 shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 shadow-lg active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
                 isVramLow
-                  ? 'bg-rose-950/90 hover:bg-rose-900 border-rose-700/80 text-rose-200'
-                  : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200 hover:text-white'
+                  ? 'bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 hover:from-rose-500 hover:to-amber-400 text-white shadow-rose-500/25 ring-2 ring-rose-500/50 animate-pulse'
+                  : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/25'
               }`}
               title="Unload loaded models from GPU memory and purge PyTorch CUDA memory cache in ComfyUI"
             >
-              <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin text-rose-300' : isVramLow ? 'text-rose-400' : 'text-slate-400'}`} />
-              <span>{isFreeingVram ? 'Purging VRAM...' : 'Clear VRAM'}</span>
+              <Trash2 className={`w-4 h-4 ${isFreeingVram ? 'animate-spin' : ''}`} />
+              <span className="tracking-wide">{isFreeingVram ? 'FREEING VRAM...' : 'FREE VRAM'}</span>
             </button>
           )}
 
           <button
             onClick={onRefresh}
-            className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium transition-all flex items-center space-x-1.5 shadow-sm active:scale-95"
+            className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold transition-all flex items-center space-x-1.5 shadow-sm active:scale-95"
             title="Refresh hardware stats immediately"
           >
             <Activity className="w-3.5 h-3.5 text-cyan-400" />
@@ -211,10 +211,10 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
                   <button
                     onClick={onFreeVram}
                     disabled={isFreeingVram}
-                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 active:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs shrink-0 flex items-center justify-center space-x-1.5 transition-all shadow-sm active:scale-95 disabled:opacity-50"
+                    className="px-4 py-2 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white font-extrabold rounded-xl text-xs shrink-0 flex items-center justify-center space-x-2 transition-all shadow-lg active:scale-95 disabled:opacity-50 tracking-wide ring-2 ring-rose-400/30"
                   >
-                    <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
-                    <span>{isFreeingVram ? 'Purging Cache...' : 'Free VRAM Cache'}</span>
+                    <Trash2 className={`w-4 h-4 ${isFreeingVram ? 'animate-spin' : ''}`} />
+                    <span>{isFreeingVram ? 'PURGING VRAM...' : 'FREE VRAM NOW'}</span>
                   </button>
                 )}
               </div>
