@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectUnlessWorker } from '../../src/gateway/cloudAuth.js';
-import { claimNextJob, getAvgDurationMs } from '../../src/gateway/db/store.pg.js';
+import { claimNextJob, getAvgDurationMs, getHeartbeatStatus, isFreeVramPending } from '../../src/gateway/db/store.pg.js';
 
 /**
  * Polled by the local worker every ~2s (see worker/index.ts). This is the only inbound
@@ -10,6 +10,12 @@ import { claimNextJob, getAvgDurationMs } from '../../src/gateway/db/store.pg.js
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (rejectUnlessWorker(req, res)) return;
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
+
+  const { heartbeat } = await getHeartbeatStatus();
+  const freeVramRequested = isFreeVramPending(heartbeat);
+  if (freeVramRequested) {
+    res.setHeader('x-free-vram-requested', '1');
+  }
 
   const job = await claimNextJob();
   if (!job) return res.status(204).end();

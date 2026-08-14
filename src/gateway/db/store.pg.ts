@@ -354,20 +354,28 @@ export async function requestFreeVram(): Promise<{ accepted: boolean; reason?: s
     return { accepted: false, reason: 'A render is currently running - reclaiming VRAM now would kill it.' };
   }
 
+  const now = new Date().toISOString();
   await db
-    .update(workerHeartbeat)
-    .set({ freeVramRequestedAt: new Date().toISOString() })
-    .where(eq(workerHeartbeat.id, HEARTBEAT_ROW_ID));
+    .insert(workerHeartbeat)
+    .values({ id: HEARTBEAT_ROW_ID, freeVramRequestedAt: now, comfyOnline: false, lastSeenAt: now })
+    .onConflictDoUpdate({
+      target: workerHeartbeat.id,
+      set: { freeVramRequestedAt: now },
+    });
   return { accepted: true };
 }
 
 /** Records that the worker carried out a reclaim, and how much it actually got back. */
 export async function markFreeVramHandled(reclaimedMb: number): Promise<void> {
   await ensureSchema();
+  const now = new Date().toISOString();
   await db
-    .update(workerHeartbeat)
-    .set({ freeVramHandledAt: new Date().toISOString(), freeVramReclaimedMb: reclaimedMb })
-    .where(eq(workerHeartbeat.id, HEARTBEAT_ROW_ID));
+    .insert(workerHeartbeat)
+    .values({ id: HEARTBEAT_ROW_ID, freeVramHandledAt: now, freeVramReclaimedMb: reclaimedMb, comfyOnline: false, lastSeenAt: now })
+    .onConflictDoUpdate({
+      target: workerHeartbeat.id,
+      set: { freeVramHandledAt: now, freeVramReclaimedMb: reclaimedMb },
+    });
 }
 
 /** True when a reclaim has been asked for and not yet carried out. */

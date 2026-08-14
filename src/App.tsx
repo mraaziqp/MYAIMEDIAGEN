@@ -137,15 +137,16 @@ export default function App() {
       if (!res.ok) {
         throw new Error(data?.error || data?.details || 'Failed to free VRAM');
       }
-      showToast('success', data?.message || 'ComfyUI models unloaded and PyTorch CUDA cache purged!');
-      // Refresh telemetry right away, then again after memory release settles
-      await fetchTelemetry();
-      setTimeout(fetchTelemetry, 1500);
-      setTimeout(fetchTelemetry, 3500);
+      showToast('info', 'Purge signal sent - worker is unloading models & clearing GPU cache...');
+      // Rapid telemetry polling to reflect the worker's memory release immediately
+      setTimeout(fetchTelemetry, 600);
+      setTimeout(fetchTelemetry, 1600);
+      setTimeout(fetchTelemetry, 3000);
+      setTimeout(fetchTelemetry, 5500);
     } catch (err: any) {
       showToast('error', err?.message || 'Failed to purge VRAM');
     } finally {
-      setIsFreeingVram(false);
+      setTimeout(() => setIsFreeingVram(false), 2000);
     }
   }, [isFreeingVram, showToast, fetchTelemetry]);
 

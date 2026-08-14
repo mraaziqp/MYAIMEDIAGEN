@@ -17,12 +17,14 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   });
 }
 
-/** Claims the next queued job, or null if the queue is empty. */
-export async function fetchNextJob(): Promise<ClaimedJob | null> {
+/** Claims the next queued job, and checks for any pending control signals. */
+export async function fetchNextJob(): Promise<{ job: ClaimedJob | null; freeVramRequested: boolean }> {
   const res = await request('/api/worker/next-job');
-  if (res.status === 204) return null;
+  const freeVramRequested = res.headers.get('x-free-vram-requested') === '1';
+  if (res.status === 204) return { job: null, freeVramRequested };
   if (!res.ok) throw new Error(`GET /api/worker/next-job failed: HTTP ${res.status}`);
-  return res.json();
+  const job = await res.json();
+  return { job, freeVramRequested };
 }
 
 export type JobPhase = 'preparing' | 'loading' | 'sampling' | 'decoding' | 'saving' | 'uploading';

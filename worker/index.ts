@@ -17,33 +17,51 @@ function sleep(ms: number): Promise<void> {
 }
 
 let isJobRunning = false;
-let pendingReclaimedMb: number | undefined = undefined;
 
 /**
- * Sends /free to ComfyUI to unload models and purge PyTorch CUDA cache allocator pool.
+ * Sends /free and /interrupt to ComfyUI to unload models and purge PyTorch CUDA cache allocator pool,
+ * then IMMEDIATELY reads fresh GPU hardware stats and syncs them to the cloud.
  */
-async function freeComfyVram(cleanUrl: string): Promise<number> {
-  const url = cleanUrl.replace(/\/$/, '');
-  console.log('[worker] Free VRAM requested by dashboard. Unloading models and purging GPU cache in ComfyUI...');
+async function executeFreeVramAndSync(): Promise<void> {
+  if (isJobRunning) return;
+  console.log('[worker] Purge VRAM signal detected. Calling ComfyUI /free to unload models & purge GPU memory...');
+  const cleanUrl = COMFY_URL.replace(/\/$/, '');
   try {
-    const res = await fetch(`${url}/free`, {
+    // 1. Send /interrupt in case anything is paused
+    await fetch(`${cleanUrl}/interrupt`, { method: 'POST' }).catch(() => {});
+    // 2. Send /free
+    const res = await fetch(`${cleanUrl}/free`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ unload_models: true, free_memory: true }),
     });
     if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      console.warn(`[worker] ComfyUI /free returned HTTP ${res.status}: ${errText}`);
-      return 0;
+      console.warn(`[worker] ComfyUI /free returned HTTP ${res.status}`);
     }
-    // Give PyTorch CUDA memory allocator ~1.2s to release memory back to driver
-    await sleep(1200);
-    const stats = await getSystemStatsInternal(url).catch(() => null);
-    console.log(`[worker] VRAM cache cleared. Current Free VRAM: ${stats?.vramFreeMb ?? 'unknown'} MB`);
-    return stats?.vramFreeMb ?? 0;
   } catch (err) {
-    console.error('[worker] Failed to execute ComfyUI /free:', err);
-    return 0;
+    console.error('[worker] Error calling ComfyUI /free:', err);
+  }
+
+  // 3. Give CUDA memory allocator 1.2s to release memory back to driver
+  await sleep(1200);
+
+  // 4. Read fresh hardware telemetry immediately and push to cloud without waiting 7s!
+  try {
+    const stats = await getSystemStatsInternal(COMFY_URL);
+    await postHeartbeat({
+      device: stats.device,
+      vramUsedMb: stats.vramUsedMb,
+      vramTotalMb: stats.vramTotalMb,
+      vramFreeMb: stats.vramFreeMb,
+      systemRamUsedMb: stats.systemRamTotalMb - stats.systemRamFreeMb,
+      systemRamTotalMb: stats.systemRamTotalMb,
+      comfyOnline: stats.status === 'ONLINE',
+      reclaimableVramMb: stats.reclaimableVramMb,
+      freeVramHandledReclaimedMb: stats.vramFreeMb,
+    });
+    console.log(`[worker] VRAM freed successfully! Free VRAM now: ${stats.vramFreeMb} MB. Synced to cloud.`);
+  } catch (err) {
+    console.error('[worker] Failed to sync telemetry after freeing VRAM:', err);
   }
 }
 
@@ -67,13 +85,10 @@ async function heartbeatLoop(): Promise<void> {
         systemRamTotalMb: stats.systemRamTotalMb,
         comfyOnline: stats.status === 'ONLINE',
         reclaimableVramMb: stats.reclaimableVramMb,
-        freeVramHandledReclaimedMb: pendingReclaimedMb,
       });
-      pendingReclaimedMb = undefined;
 
       if (res?.freeVramRequested && !isJobRunning) {
-        const freeMb = await freeComfyVram(COMFY_URL);
-        pendingReclaimedMb = freeMb;
+        await executeFreeVramAndSync();
       }
     } catch (err) {
       if (err instanceof GpuTelemetryError) {
@@ -93,7 +108,12 @@ async function heartbeatLoop(): Promise<void> {
 async function jobLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
-      const job = await fetchNextJob();
+      const { job, freeVramRequested } = await fetchNextJob();
+
+      if (freeVramRequested && !isJobRunning) {
+        await executeFreeVramAndSync();
+      }
+
       if (!job) {
         await sleep(POLL_INTERVAL_MS);
         continue;
