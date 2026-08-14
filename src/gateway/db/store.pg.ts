@@ -1,6 +1,6 @@
 import { neon } from '@neondatabase/serverless';
 import { drizzle } from 'drizzle-orm/neon-http';
-import { eq, desc, sql, or, like } from 'drizzle-orm';
+import { eq, desc, sql, or, ilike } from 'drizzle-orm';
 import { jobs, workerHeartbeat, Job, NewJob, WorkerHeartbeatRow } from './schema.pg.js';
 
 // Neon's Vercel Marketplace integration injects DATABASE_URL; POSTGRES_URL is kept as a
@@ -72,6 +72,13 @@ function ensureSchema(): Promise<void> {
       // added after the first deploy need their own idempotent ALTER - without this, an
       // existing `jobs` table would never gain `phase` and every write naming it would fail.
       await sqlClient`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phase TEXT;`;
+      await sqlClient`
+        ALTER TABLE worker_heartbeat
+          ADD COLUMN IF NOT EXISTS reclaimable_vram_mb INTEGER,
+          ADD COLUMN IF NOT EXISTS free_vram_requested_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS free_vram_handled_at TIMESTAMPTZ,
+          ADD COLUMN IF NOT EXISTS free_vram_reclaimed_mb INTEGER;
+      `;
       await sqlClient`CREATE INDEX IF NOT EXISTS jobs_status_created_at_idx ON jobs (status, created_at);`;
       await sqlClient`
         CREATE TABLE IF NOT EXISTS worker_heartbeat (
@@ -108,14 +115,21 @@ export async function getJobById(id: string): Promise<Job | undefined> {
   return row;
 }
 
-export async function queryJobs(query: string): Promise<Job[]> {
+/**
+ * Gallery search. Two fixes over the original: it was unbounded, so a broad term (or an empty
+ * -ish one) returned every matching row in the vault and shipped all of it to the browser; and
+ * it used LIKE, which is case-sensitive in Postgres, so "Cyberpunk" silently missed a prompt
+ * written "cyberpunk". Bounded with the same default the non-search path already uses.
+ */
+export async function queryJobs(query: string, limit = 50): Promise<Job[]> {
   await ensureSchema();
   const pattern = `%${query}%`;
   return db
     .select()
     .from(jobs)
-    .where(or(like(jobs.prompt, pattern), like(jobs.modelType, pattern), like(jobs.promptHash, pattern)))
-    .orderBy(desc(jobs.createdAt));
+    .where(or(ilike(jobs.prompt, pattern), ilike(jobs.modelType, pattern), ilike(jobs.promptHash, pattern)))
+    .orderBy(desc(jobs.createdAt))
+    .limit(limit);
 }
 
 /**
@@ -233,26 +247,39 @@ export interface DurationStat {
 const DURATION_SAMPLE_SIZE = 20;
 const KNOWN_MODEL_TYPES = ['image_fast', 'image_hd', 'video_short'];
 
+/**
+ * One round trip for all model types instead of a query per type inside a loop. Each of those
+ * was a separate network hop to Neon, so the endpoint's latency scaled with the number of
+ * models - and this runs on every dashboard load and after every completed render.
+ *
+ * The window function reproduces the per-model "last N" limit that the per-type LIMIT gave:
+ * rank rows within each model_type by recency, keep the newest DURATION_SAMPLE_SIZE, then
+ * average. Models with no completed runs are still reported with a null average rather than
+ * omitted, so the UI can distinguish "no data yet" from "zero".
+ */
 export async function getDurationStats(): Promise<DurationStat[]> {
   await ensureSchema();
-  const stats: DurationStat[] = [];
-  for (const modelType of KNOWN_MODEL_TYPES) {
-    const rows = await db
-      .select({ durationMs: jobs.durationMs })
-      .from(jobs)
-      .where(sql`${jobs.modelType} = ${modelType} AND ${jobs.durationMs} > 0`)
-      .orderBy(desc(jobs.createdAt))
-      .limit(DURATION_SAMPLE_SIZE);
+  const rows = (await sqlClient`
+    SELECT model_type, ROUND(AVG(duration_ms))::int AS avg_duration_ms, COUNT(*)::int AS sample_count
+    FROM (
+      SELECT model_type, duration_ms,
+             ROW_NUMBER() OVER (PARTITION BY model_type ORDER BY created_at DESC) AS rn
+      FROM jobs
+      WHERE duration_ms > 0 AND status = 'completed'
+    ) ranked
+    WHERE rn <= ${DURATION_SAMPLE_SIZE}
+    GROUP BY model_type
+  `) as Array<{ model_type: string; avg_duration_ms: number; sample_count: number }>;
 
-    if (rows.length === 0) {
-      stats.push({ modelType, avgDurationMs: null, sampleCount: 0 });
-      continue;
-    }
-
-    const avgDurationMs = Math.round(rows.reduce((sum, r) => sum + r.durationMs, 0) / rows.length);
-    stats.push({ modelType, avgDurationMs, sampleCount: rows.length });
-  }
-  return stats;
+  const byModel = new Map(rows.map((r) => [r.model_type, r]));
+  return KNOWN_MODEL_TYPES.map((modelType) => {
+    const hit = byModel.get(modelType);
+    return {
+      modelType,
+      avgDurationMs: hit ? hit.avg_duration_ms : null,
+      sampleCount: hit ? hit.sample_count : 0,
+    };
+  });
 }
 
 /**
@@ -298,15 +325,56 @@ export async function upsertHeartbeat(data: {
   systemRamUsedMb?: number;
   systemRamTotalMb?: number;
   comfyOnline: boolean;
+  reclaimableVramMb?: number;
 }): Promise<void> {
   await ensureSchema();
+  const now = new Date().toISOString();
   await db
     .insert(workerHeartbeat)
-    .values({ id: HEARTBEAT_ROW_ID, lastSeenAt: new Date().toISOString(), ...data })
+    .values({ id: HEARTBEAT_ROW_ID, lastSeenAt: now, ...data })
     .onConflictDoUpdate({
       target: workerHeartbeat.id,
-      set: { lastSeenAt: new Date().toISOString(), ...data },
+      set: { lastSeenAt: now, ...data },
     });
+}
+
+/**
+ * Flags that the user wants ComfyUI's held VRAM released. Refused while a job is actually
+ * running: unloading models mid-render would destroy the in-flight generation, and the legacy
+ * local server refused the same case for the same reason.
+ */
+export async function requestFreeVram(): Promise<{ accepted: boolean; reason?: string }> {
+  await ensureSchema();
+  const [active] = await db
+    .select({ id: jobs.id })
+    .from(jobs)
+    .where(sql`${jobs.status} IN ('claimed', 'processing')`)
+    .limit(1);
+  if (active) {
+    return { accepted: false, reason: 'A render is currently running - reclaiming VRAM now would kill it.' };
+  }
+
+  await db
+    .update(workerHeartbeat)
+    .set({ freeVramRequestedAt: new Date().toISOString() })
+    .where(eq(workerHeartbeat.id, HEARTBEAT_ROW_ID));
+  return { accepted: true };
+}
+
+/** Records that the worker carried out a reclaim, and how much it actually got back. */
+export async function markFreeVramHandled(reclaimedMb: number): Promise<void> {
+  await ensureSchema();
+  await db
+    .update(workerHeartbeat)
+    .set({ freeVramHandledAt: new Date().toISOString(), freeVramReclaimedMb: reclaimedMb })
+    .where(eq(workerHeartbeat.id, HEARTBEAT_ROW_ID));
+}
+
+/** True when a reclaim has been asked for and not yet carried out. */
+export function isFreeVramPending(row: WorkerHeartbeatRow | null): boolean {
+  if (!row?.freeVramRequestedAt) return false;
+  if (!row.freeVramHandledAt) return true;
+  return new Date(row.freeVramRequestedAt).getTime() > new Date(row.freeVramHandledAt).getTime();
 }
 
 export interface HeartbeatStatus {

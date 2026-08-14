@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { upload } from '@vercel/blob/client';
-import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2 } from 'lucide-react';
+import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2, Trash2 } from 'lucide-react';
 import { MediaType, AspectRatio, WorkflowParams, SystemStats, DurationStat } from '../types';
 
 /** Read intrinsic pixel dimensions client-side - there's no server-side sharp step anymore
@@ -26,6 +26,8 @@ interface GeneratorPanelProps {
   isGenerating: boolean;
   stats: SystemStats | null;
   durationStats: DurationStat[];
+  onFreeVram?: () => void;
+  isFreeingVram?: boolean;
 }
 
 /**
@@ -49,21 +51,21 @@ const PRESET_PROMPTS = [
   },
   {
     title: 'Mechanical Hummingbird',
-    type: 'image_hd' as MediaType,
+    type: 'image_fast' as MediaType,
     aspect: '1:1' as AspectRatio,
-    prompt: 'Ultra HD realistic macro shot of a metallic mechanical hummingbird with glowing sapphire wings and brass gear clockwork details',
+    prompt: 'Intricate mechanical steampunk hummingbird hovering near a glass flower, brass gears, polished copper, macro photography',
   },
   {
     title: 'Autumn Mountain Drone',
-    type: 'video_short' as MediaType,
+    type: 'image_hd' as MediaType,
     aspect: '16:9' as AspectRatio,
-    prompt: 'AnimateDiff cinematic drone shot flying over misty autumn mountains, golden hour light, 16 frames fluid motion',
+    prompt: 'Epic aerial drone shot of golden autumn forest surrounding misty alpine lake, morning sun rays, ultra detailed landscape',
   },
   {
     title: 'Sci-Fi Cyber Android',
     type: 'image_hd' as MediaType,
     aspect: '9:16' as AspectRatio,
-    prompt: 'Futuristic sci-fi android concept art, glowing neon blue neural circuits, octane render, studio lighting, highly detailed portrait',
+    prompt: 'Portrait of futuristic cybernetic android with translucent porcelain shell and glowing blue fiber optics, dramatic studio lighting',
   },
 ];
 
@@ -72,6 +74,8 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   isGenerating,
   stats,
   durationStats,
+  onFreeVram,
+  isFreeingVram = false,
 }) => {
   const [prompt, setPrompt] = useState(
     'Cyberpunk neon alleyway in neo-Tokyo with rain reflections, glowing signs, cinematic 8k, photorealistic'
@@ -436,15 +440,34 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
 
         </div>
 
-        {/* GPU Unavailable / Insufficient VRAM Hard Block - mirrors the backend's OOM guardrail exactly */}
+        {/* GPU Unavailable / Insufficient VRAM Hard Block */}
         {(gpuUnavailable || vramCritical) && (
-          <div className="flex items-center space-x-2 p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs">
-            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
-            <span>
-              {gpuUnavailable
-                ? 'GPU telemetry unavailable - cannot verify VRAM, so rendering is disabled.'
-                : `Free VRAM (${freeVramMb} MB) is below the ${requiredVramMb} MB this model needs - rendering is disabled to prevent an OOM crash. Try "Free VRAM" above, or pick a lighter model.`}
-            </span>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl bg-rose-950/50 border border-rose-800/70 text-rose-200 text-xs gap-3 shadow-lg">
+            <div className="flex items-start space-x-2.5">
+              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold block text-rose-100">
+                  {gpuUnavailable ? 'GPU Telemetry Offline' : 'Insufficient Free VRAM for Model'}
+                </span>
+                <span className="text-[11px] text-rose-300/90">
+                  {gpuUnavailable
+                    ? 'GPU telemetry unavailable - cannot verify VRAM, so rendering is disabled.'
+                    : `This model requires at least ${requiredVramMb} MB free VRAM, but only ${freeVramMb} MB is currently available. Previous weights or torch memory are still loaded.`}
+                </span>
+              </div>
+            </div>
+
+            {vramCritical && onFreeVram && (
+              <button
+                type="button"
+                onClick={onFreeVram}
+                disabled={isFreeingVram}
+                className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 active:bg-rose-700 text-white font-bold rounded-lg text-xs shrink-0 flex items-center justify-center space-x-1.5 transition-all shadow-md active:scale-95 disabled:opacity-50"
+              >
+                <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
+                <span>{isFreeingVram ? 'Purging...' : 'Clear VRAM Now'}</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -473,7 +496,10 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
           ) : gpuUnavailable ? (
             <span>GPU Telemetry Unavailable</span>
           ) : vramCritical ? (
-            <span>Insufficient VRAM ({freeVramMb} MB Free)</span>
+            <div className="flex items-center space-x-2">
+              <ShieldAlert className="w-4 h-4 text-rose-400" />
+              <span>Insufficient VRAM ({freeVramMb} MB Free / {requiredVramMb} MB Needed) — Clear VRAM Above</span>
+            </div>
           ) : isUploading ? (
             <span>Uploading Reference Image...</span>
           ) : referenceImageMissing ? (

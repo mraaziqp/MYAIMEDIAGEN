@@ -50,6 +50,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     lastSeenAt: heartbeat.lastSeenAt,
     systemRamTotalMb,
     systemRamFreeMb: systemRamTotalMb - systemRamUsedMb,
+    reclaimableVramMb: heartbeat.reclaimableVramMb ?? undefined,
     preflightCheck: {
       passed: preflight.passed,
       recommendedMediaType: preflight.recommendedMediaType,

@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectUnlessWorker } from '../../src/gateway/cloudAuth.js';
-import { upsertHeartbeat } from '../../src/gateway/db/store.pg.js';
+import { upsertHeartbeat, markFreeVramHandled, getHeartbeatStatus, isFreeVramPending } from '../../src/gateway/db/store.pg.js';
 
 /**
  * Posted every ~5-10s by the local worker (see worker/index.ts). This is the only signal the
@@ -11,8 +11,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (rejectUnlessWorker(req, res)) return;
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { device, vramUsedMb, vramTotalMb, vramFreeMb, systemRamUsedMb, systemRamTotalMb, comfyOnline } =
-    req.body || {};
+  const {
+    device,
+    vramUsedMb,
+    vramTotalMb,
+    vramFreeMb,
+    systemRamUsedMb,
+    systemRamTotalMb,
+    comfyOnline,
+    reclaimableVramMb,
+    freeVramHandledReclaimedMb,
+  } = req.body || {};
+
+  if (freeVramHandledReclaimedMb != null) {
+    await markFreeVramHandled(Number(freeVramHandledReclaimedMb));
+  }
 
   await upsertHeartbeat({
     device,
@@ -22,7 +35,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     systemRamUsedMb: systemRamUsedMb != null ? Number(systemRamUsedMb) : undefined,
     systemRamTotalMb: systemRamTotalMb != null ? Number(systemRamTotalMb) : undefined,
     comfyOnline: Boolean(comfyOnline),
+    reclaimableVramMb: reclaimableVramMb != null ? Number(reclaimableVramMb) : undefined,
   });
 
-  res.status(200).json({ success: true });
+  const { heartbeat } = await getHeartbeatStatus();
+  const freeVramRequested = isFreeVramPending(heartbeat);
+
+  res.status(200).json({ success: true, freeVramRequested });
 }

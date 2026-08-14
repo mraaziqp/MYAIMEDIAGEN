@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CheckCircle2, XCircle, Radio } from 'lucide-react';
 import { Navbar } from './components/Navbar';
 import { VramGauge } from './components/VramGauge';
@@ -36,6 +36,7 @@ export default function App() {
   // "reattach" to anymore, this is the cloud-hosted equivalent of that idea.
   const [activePromptId, setActivePromptIdState] = useState<string | null>(readStoredActiveJobId);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(() => !!readStoredActiveJobId());
+  const [isFreeingVram, setIsFreeingVram] = useState(false);
 
   const setActivePromptId = useCallback((id: string | null) => {
     setActivePromptIdState(id);
@@ -49,9 +50,23 @@ export default function App() {
 
   const [toast, setToast] = useState<{ type: 'info' | 'success' | 'error'; message: string } | null>(null);
 
+  // Each toast used to schedule a bare setTimeout with no handle kept. Two consequences, both
+  // real: the timers were never cleared on unmount, and a second toast within the window
+  // inherited the FIRST toast's timer - so the new message vanished early, after the remainder
+  // of the old one's 4.5s rather than its own. Tracking the handle fixes both.
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const showToast = useCallback((type: 'info' | 'success' | 'error', message: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ type, message });
-    setTimeout(() => setToast(null), 4500);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 4500);
+  }, []);
+
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
   const fetchTelemetry = useCallback(async () => {
@@ -109,6 +124,30 @@ export default function App() {
     const interval = setInterval(fetchTelemetry, intervalMs);
     return () => clearInterval(interval);
   }, [fetchTelemetry, isSubmitting, activePromptId]);
+
+  const handleFreeVram = useCallback(async () => {
+    if (isFreeingVram) return;
+    setIsFreeingVram(true);
+    try {
+      const res = await fetch('/api/free-vram', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || data?.details || 'Failed to free VRAM');
+      }
+      showToast('success', data?.message || 'ComfyUI models unloaded and PyTorch CUDA cache purged!');
+      // Refresh telemetry right away, then again after memory release settles
+      await fetchTelemetry();
+      setTimeout(fetchTelemetry, 1500);
+      setTimeout(fetchTelemetry, 3500);
+    } catch (err: any) {
+      showToast('error', err?.message || 'Failed to purge VRAM');
+    } finally {
+      setIsFreeingVram(false);
+    }
+  }, [isFreeingVram, showToast, fetchTelemetry]);
 
   const handleGenerate = async (params: WorkflowParams) => {
     setIsSubmitting(true);
@@ -192,7 +231,14 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-cyan-500 selection:text-slate-950">
-      <Navbar activeTab={activeTab} setActiveTab={(t) => setActiveTab(t as Tab)} systemStats={stats} onRefreshStats={fetchTelemetry} />
+      <Navbar
+        activeTab={activeTab}
+        setActiveTab={(t) => setActiveTab(t as Tab)}
+        systemStats={stats}
+        onRefreshStats={fetchTelemetry}
+        onFreeVram={handleFreeVram}
+        isFreeingVram={isFreeingVram}
+      />
 
       {toast && (
         <div className="fixed bottom-5 right-5 z-50">
@@ -216,7 +262,12 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6 pb-16">
         {activeTab === 'generate' && (
           <div className="space-y-6">
-            <VramGauge stats={stats} onRefresh={fetchTelemetry} />
+            <VramGauge
+              stats={stats}
+              onRefresh={fetchTelemetry}
+              onFreeVram={handleFreeVram}
+              isFreeingVram={isFreeingVram}
+            />
 
             {activePromptId && (
               <ProgressViewer
@@ -228,7 +279,14 @@ export default function App() {
               />
             )}
 
-            <GeneratorPanel onGenerate={handleGenerate} isGenerating={isSubmitting} stats={stats} durationStats={durationStats} />
+            <GeneratorPanel
+              onGenerate={handleGenerate}
+              isGenerating={isSubmitting}
+              stats={stats}
+              durationStats={durationStats}
+              onFreeVram={handleFreeVram}
+              isFreeingVram={isFreeingVram}
+            />
           </div>
         )}
 
@@ -238,7 +296,14 @@ export default function App() {
 
         {activeTab === 'workflows' && <WorkflowInspector />}
 
-        {activeTab === 'settings' && <WorkerStatus stats={stats} onRefresh={fetchTelemetry} />}
+        {activeTab === 'settings' && (
+          <WorkerStatus
+            stats={stats}
+            onRefresh={fetchTelemetry}
+            onFreeVram={handleFreeVram}
+            isFreeingVram={isFreeingVram}
+          />
+        )}
       </main>
     </div>
   );

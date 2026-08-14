@@ -67,6 +67,22 @@ export const workerHeartbeat = pgTable('worker_heartbeat', {
   systemRamUsedMb: integer('system_ram_used_mb'),
   systemRamTotalMb: integer('system_ram_total_mb'),
   comfyOnline: boolean('comfy_online').notNull().default(false),
+  /**
+   * VRAM ComfyUI's torch allocator currently holds - model weights plus its cache pool. This
+   * is the only portion a "reclaim memory" action can actually release, so the dashboard uses
+   * it to decide whether reclaiming is worth offering at all rather than always presenting a
+   * button that may free nothing.
+   */
+  reclaimableVramMb: integer('reclaimable_vram_mb'),
+  /**
+   * Reclaim is request/ack, not a command: the cloud cannot call into the PC, so POST
+   * /api/free-vram only stamps a request here and the worker picks it up on its next
+   * heartbeat - the same pull-only pattern as interruptRequested on a job. Handled-at is
+   * compared against requested-at to tell a pending request from a satisfied one.
+   */
+  freeVramRequestedAt: timestamp('free_vram_requested_at', { mode: 'string', withTimezone: true }),
+  freeVramHandledAt: timestamp('free_vram_handled_at', { mode: 'string', withTimezone: true }),
+  freeVramReclaimedMb: integer('free_vram_reclaimed_mb'),
 });
 
 export type Job = typeof jobs.$inferSelect;

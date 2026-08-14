@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import crypto from 'crypto';
 import { put } from '@vercel/blob';
 import { buildComfyUiWorkflow } from '../src/gateway/workflowMapper.js';
-import { getSystemStatsInternal, runPreflightCheck } from '../src/gateway/vramMonitor.js';
+import { getSystemStatsInternal, readGpuVram, runPreflightCheck } from '../src/gateway/vramMonitor.js';
 import { MediaType } from '../src/gateway/types.js';
 import * as cloud from './gatewayClient.js';
 import type { ClaimedJob, JobPhase, ProgressPatch } from './gatewayClient.js';
@@ -227,7 +227,10 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
 
       let vramCurrentMb: number | undefined;
       try {
-        const live = await getSystemStatsInternal(comfyUrl);
+        // VRAM only: the full telemetry call additionally round-trips to ComfyUI to recompute
+        // an online/offline flag this ticker never reads, which at a 2s cadence was ~30
+        // pointless HTTP requests a minute on top of the nvidia-smi spawn.
+        const live = await readGpuVram();
         vramCurrentMb = live.vramUsedMb;
         peakVramMb = Math.max(peakVramMb, live.vramUsedMb);
       } catch {

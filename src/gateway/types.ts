@@ -143,6 +143,8 @@ export interface HardwareTelemetry {
   device: string;
   comfyUrl: string;
   isTunnelConnected: boolean;
+  /** VRAM currently held by ComfyUI PyTorch caching allocator that can be released */
+  reclaimableVramMb?: number;
   /** ISO timestamp of the worker's last heartbeat - absent only if it has never reported in. */
   lastSeenAt?: string;
   preflightCheck: {

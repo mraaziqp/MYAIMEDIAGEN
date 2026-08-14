@@ -34,6 +34,55 @@ interface GpuReading {
 }
 
 /**
+ * nvidia-smi is a process spawn (~50-100ms), and it is now read from two independent loops in
+ * the worker: the ~7s heartbeat and the ~2s progress ticker. Uncached that is ~38 spawns a
+ * minute during a render, most of them reporting a value another caller just fetched. A TTL
+ * slightly under the fastest caller's interval collapses those into one spawn per tick while
+ * staying well inside "live" - no reading is ever served older than TTL, so this trades no
+ * accuracy for the saving. In-flight requests share one promise so concurrent callers can't
+ * both spawn.
+ */
+const GPU_READ_TTL_MS = 1500;
+let gpuCache: { reading: GpuReading; at: number } | null = null;
+let gpuInFlight: Promise<GpuReading> | null = null;
+
+async function readGpu(): Promise<GpuReading> {
+  if (gpuCache && Date.now() - gpuCache.at < GPU_READ_TTL_MS) return gpuCache.reading;
+  if (gpuInFlight) return gpuInFlight;
+
+  gpuInFlight = queryNvidiaSmi()
+    .then((reading) => {
+      gpuCache = { reading, at: Date.now() };
+      return reading;
+    })
+    .finally(() => {
+      gpuInFlight = null;
+    });
+
+  return gpuInFlight;
+}
+
+export interface GpuVramReading {
+  vramUsedMb: number;
+  vramTotalMb: number;
+  vramFreeMb: number;
+}
+
+/**
+ * VRAM only - no ComfyUI round trip. The progress ticker needs nothing else, and calling the
+ * full getSystemStatsInternal there meant an HTTP request to ComfyUI every 2s purely to
+ * recompute an online/offline flag the ticker never reads.
+ */
+export async function readGpuVram(): Promise<GpuVramReading> {
+  const gpu = await readGpu();
+  return {
+    vramUsedMb: gpu.vramUsedMb,
+    vramTotalMb: gpu.vramTotalMb,
+    vramFreeMb: gpu.vramTotalMb - gpu.vramUsedMb,
+  };
+}
+
+/**
  * Reads exact VRAM usage directly from the NVIDIA driver via nvidia-smi.
  * This bypasses ComfyUI's /system_stats entirely since it lags/misreports under load.
  */
@@ -71,11 +120,24 @@ async function queryNvidiaSmi(): Promise<GpuReading> {
   return { name, vramUsedMb, vramTotalMb };
 }
 
+export interface ComfyProbe {
+  online: boolean;
+  /**
+   * VRAM torch has reserved on ComfyUI's device - i.e. loaded model weights plus its caching
+   * allocator's pool. This is precisely the memory ComfyUI's /free endpoint can hand back, so
+   * it is the only honest basis for a "reclaim memory" action: it reads 0 when nothing is
+   * loaded, rather than tempting the user to "free" VRAM that belongs to other processes and
+   * that ComfyUI has no ability to release.
+   */
+  torchVramReservedMb?: number;
+}
+
 /**
- * Lightweight reachability probe - does NOT affect VRAM numbers, only the
- * ComfyUI online/offline flag reported alongside real hardware telemetry.
+ * Reachability probe that also returns ComfyUI's own memory accounting. The response body was
+ * previously fetched and discarded, so this costs nothing extra - the request was already
+ * being made on every telemetry read.
  */
-async function isComfyReachable(comfyUrl: string): Promise<boolean> {
+async function probeComfy(comfyUrl: string): Promise<ComfyProbe> {
   const cleanUrl = comfyUrl.replace(/\/$/, '');
   try {
     const controller = new AbortController();
@@ -85,9 +147,16 @@ async function isComfyReachable(comfyUrl: string): Promise<boolean> {
       headers: { Accept: 'application/json' },
     });
     clearTimeout(timeoutId);
-    return res.ok;
+    if (!res.ok) return { online: false };
+
+    const body: any = await res.json().catch(() => null);
+    const reserved = body?.devices?.[0]?.torch_vram_total;
+    return {
+      online: true,
+      torchVramReservedMb: typeof reserved === 'number' ? Math.round(reserved / (1024 * 1024)) : undefined,
+    };
   } catch {
-    return false;
+    return { online: false };
   }
 }
 
@@ -97,7 +166,10 @@ async function isComfyReachable(comfyUrl: string): Promise<boolean> {
  */
 export async function getSystemStatsInternal(comfyUrl: string = 'http://127.0.0.1:8188'): Promise<SystemStats> {
   const cleanUrl = comfyUrl.replace(/\/$/, '');
-  const gpu = await queryNvidiaSmi();
+  // Both reads are independent - run them concurrently rather than serially. The nvidia-smi
+  // spawn and the ComfyUI round trip were previously awaited one after the other, so every
+  // telemetry read cost the sum of the two rather than the slower of them.
+  const [gpu, comfy] = await Promise.all([readGpu(), probeComfy(cleanUrl)]);
 
   const vramFreeMb = gpu.vramTotalMb - gpu.vramUsedMb;
   const vramUsagePercent = Math.round((gpu.vramUsedMb / gpu.vramTotalMb) * 100);
@@ -106,7 +178,7 @@ export async function getSystemStatsInternal(comfyUrl: string = 'http://127.0.0.
   const systemRamFreeMb = Math.round(os.freemem() / (1024 * 1024));
   const ramUsedMb = systemRamTotalMb - systemRamFreeMb;
 
-  const comfyOnline = await isComfyReachable(cleanUrl);
+  const comfyOnline = comfy.online;
   const preflight = runPreflightCheck(vramFreeMb, 'image_fast');
 
   return {
@@ -123,6 +195,7 @@ export async function getSystemStatsInternal(comfyUrl: string = 'http://127.0.0.
     isTunnelConnected: comfyOnline,
     systemRamTotalMb,
     systemRamFreeMb,
+    reclaimableVramMb: comfy.torchVramReservedMb,
     preflightCheck: {
       passed: preflight.passed,
       recommendedMediaType: preflight.recommendedMediaType,

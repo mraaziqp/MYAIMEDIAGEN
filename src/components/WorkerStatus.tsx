@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { Cpu, Radio, RefreshCw, Terminal, Copy, Check, ShieldAlert, ShieldCheck, HardDrive } from 'lucide-react';
+import { Cpu, Radio, RefreshCw, Terminal, Copy, Check, ShieldAlert, ShieldCheck, HardDrive, Trash2 } from 'lucide-react';
 import { SystemStats } from '../types';
 
 interface WorkerStatusProps {
   stats: SystemStats | null;
   onRefresh: () => void;
+  onFreeVram?: () => void;
+  isFreeingVram?: boolean;
 }
 
 /**
@@ -13,7 +15,12 @@ interface WorkerStatusProps {
  * worker does, from its own local .env). This is a read-only status view of the one signal
  * the cloud actually has: how recently the worker last checked in.
  */
-export const WorkerStatus: React.FC<WorkerStatusProps> = ({ stats, onRefresh }) => {
+export const WorkerStatus: React.FC<WorkerStatusProps> = ({
+  stats,
+  onRefresh,
+  onFreeVram,
+  isFreeingVram = false,
+}) => {
   const [copied, setCopied] = useState(false);
   const startCommand = 'npx tsx worker/index.ts';
 
@@ -43,13 +50,26 @@ export const WorkerStatus: React.FC<WorkerStatusProps> = ({ stats, onRefresh }) 
           </div>
         </div>
 
-        <button
-          onClick={onRefresh}
-          className="px-4 py-2 rounded-xl bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-xs font-bold transition-all flex items-center space-x-2 shadow-md"
-        >
-          <RefreshCw className="w-3 h-3" />
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          {onFreeVram && stats && isOnline && (
+            <button
+              onClick={onFreeVram}
+              disabled={isFreeingVram}
+              className="px-4 py-2 rounded-xl bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-xs font-bold transition-all flex items-center space-x-2 shadow-md active:scale-95 disabled:opacity-50"
+            >
+              <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
+              <span>{isFreeingVram ? 'Purging VRAM...' : 'Clear VRAM Cache'}</span>
+            </button>
+          )}
+
+          <button
+            onClick={onRefresh}
+            className="px-4 py-2 rounded-xl bg-cyan-950 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-xs font-bold transition-all flex items-center space-x-2 shadow-md"
+          >
+            <RefreshCw className="w-3 h-3" />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

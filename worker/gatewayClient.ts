@@ -79,9 +79,17 @@ export interface HeartbeatPayload {
   systemRamUsedMb?: number;
   systemRamTotalMb?: number;
   comfyOnline: boolean;
+  reclaimableVramMb?: number;
+  freeVramHandledReclaimedMb?: number;
 }
 
-/** Best-effort - a dropped heartbeat just means the dashboard shows "offline" a beat late. */
-export async function postHeartbeat(data: HeartbeatPayload): Promise<void> {
-  await request('/api/worker/heartbeat', { method: 'POST', body: JSON.stringify(data) }).catch(() => {});
+/** Posts heartbeat and receives control signals (such as freeVramRequested) from cloud. */
+export async function postHeartbeat(data: HeartbeatPayload): Promise<{ freeVramRequested?: boolean } | null> {
+  try {
+    const res = await request('/api/worker/heartbeat', { method: 'POST', body: JSON.stringify(data) });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }

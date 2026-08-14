@@ -16,6 +16,37 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+let isJobRunning = false;
+let pendingReclaimedMb: number | undefined = undefined;
+
+/**
+ * Sends /free to ComfyUI to unload models and purge PyTorch CUDA cache allocator pool.
+ */
+async function freeComfyVram(cleanUrl: string): Promise<number> {
+  const url = cleanUrl.replace(/\/$/, '');
+  console.log('[worker] Free VRAM requested by dashboard. Unloading models and purging GPU cache in ComfyUI...');
+  try {
+    const res = await fetch(`${url}/free`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unload_models: true, free_memory: true }),
+    });
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      console.warn(`[worker] ComfyUI /free returned HTTP ${res.status}: ${errText}`);
+      return 0;
+    }
+    // Give PyTorch CUDA memory allocator ~1.2s to release memory back to driver
+    await sleep(1200);
+    const stats = await getSystemStatsInternal(url).catch(() => null);
+    console.log(`[worker] VRAM cache cleared. Current Free VRAM: ${stats?.vramFreeMb ?? 'unknown'} MB`);
+    return stats?.vramFreeMb ?? 0;
+  } catch (err) {
+    console.error('[worker] Failed to execute ComfyUI /free:', err);
+    return 0;
+  }
+}
+
 /**
  * Posts real VRAM/RAM/ComfyUI-reachability telemetry every ~7s - this is the only signal the
  * cloud dashboard has for "is my PC on" (see api/system-stats.ts, which derives Online/Offline
@@ -27,7 +58,7 @@ async function heartbeatLoop(): Promise<void> {
   while (!shuttingDown) {
     try {
       const stats = await getSystemStatsInternal(COMFY_URL);
-      await postHeartbeat({
+      const res = await postHeartbeat({
         device: stats.device,
         vramUsedMb: stats.vramUsedMb,
         vramTotalMb: stats.vramTotalMb,
@@ -35,7 +66,15 @@ async function heartbeatLoop(): Promise<void> {
         systemRamUsedMb: stats.systemRamTotalMb - stats.systemRamFreeMb,
         systemRamTotalMb: stats.systemRamTotalMb,
         comfyOnline: stats.status === 'ONLINE',
+        reclaimableVramMb: stats.reclaimableVramMb,
+        freeVramHandledReclaimedMb: pendingReclaimedMb,
       });
+      pendingReclaimedMb = undefined;
+
+      if (res?.freeVramRequested && !isJobRunning) {
+        const freeMb = await freeComfyVram(COMFY_URL);
+        pendingReclaimedMb = freeMb;
+      }
     } catch (err) {
       if (err instanceof GpuTelemetryError) {
         console.error(`[worker] GPU telemetry unavailable: ${err.message}`);
@@ -60,9 +99,15 @@ async function jobLoop(): Promise<void> {
         continue;
       }
       console.log(`[worker] Claimed job ${job.id} (${job.modelType})`);
-      await runJob(job, COMFY_URL);
+      isJobRunning = true;
+      try {
+        await runJob(job, COMFY_URL);
+      } finally {
+        isJobRunning = false;
+      }
       console.log(`[worker] Finished job ${job.id}`);
     } catch (err) {
+      isJobRunning = false;
       console.error('[worker] Job loop error:', err);
       await sleep(ERROR_BACKOFF_MS);
     }
