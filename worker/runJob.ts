@@ -7,7 +7,7 @@ import { MediaType } from '../src/gateway/types.js';
 import * as cloud from './gatewayClient.js';
 import type { ClaimedJob, JobPhase, ProgressPatch } from './gatewayClient.js';
 
-const EXECUTION_TIMEOUT_MS = 5 * 60 * 1000;
+const EXECUTION_TIMEOUT_MS = 10 * 60 * 1000;
 
 // Cadence of the progress ticker. Faster than the dashboard's own ~1.2s poll would be wasted
 // writes; much slower and the "elapsed" readout visibly stutters. 2s also bounds how long an
@@ -211,6 +211,11 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
       finalize(async () => {
         ws.close();
         fetch(`${cleanUrl}/interrupt`, { method: 'POST' }).catch(() => {});
+        fetch(`${cleanUrl}/free`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ unload_models: true, free_memory: true }),
+        }).catch(() => {});
         await cloud.postFail(job.id, 'Generation interrupted by user request.', true);
       });
     };
@@ -303,11 +308,16 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
 
     const timeoutHandle = setTimeout(() => {
       finalize(async () => {
-        await cloud.postFail(job.id, `GPU execution timed out after 5 minutes with no 'executed' event from ComfyUI.`);
+        await cloud.postFail(job.id, `GPU execution timed out after 10 minutes with no 'executed' event from ComfyUI.`);
         try {
           ws.close();
         } catch {}
         fetch(`${cleanUrl}/interrupt`, { method: 'POST' }).catch(() => {});
+        fetch(`${cleanUrl}/free`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ unload_models: true, free_memory: true }),
+        }).catch(() => {});
       });
     }, EXECUTION_TIMEOUT_MS);
 
