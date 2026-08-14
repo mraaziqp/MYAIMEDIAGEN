@@ -24,7 +24,10 @@ export function buildComfyUiWorkflow(params: WorkflowParams): Record<string, any
       // Node "1" is always the checkpoint/model loader across every workflow this file
       // builds - comfyService.ts's progress reporting keys off that to report a slow model
       // load honestly instead of a flat, misleading percentage.
-      "1": { "inputs": { "ckpt_name": "svd_xt_1_1.safetensors" }, "class_type": "ImageOnlyCheckpointLoader" },
+      // SVD-XT 1.0, not 1.1: the 1.1 weights sit behind a gated HuggingFace repo (401 without
+      // an account that has accepted Stability's license), so the openly downloadable 1.0
+      // release is what's actually installed. Same architecture and node graph either way.
+      "1": { "inputs": { "ckpt_name": "svd_xt.safetensors" }, "class_type": "ImageOnlyCheckpointLoader" },
       "2": { "inputs": { "image": params.referenceImage }, "class_type": "LoadImage" },
       "3": {
         "inputs": {
@@ -73,7 +76,10 @@ export function buildComfyUiWorkflow(params: WorkflowParams): Record<string, any
   const isFlux = mediaTypeKey === 'image_fast';
   const steps = isFlux ? (params.steps || 4) : (params.steps || 25);
   const cfg = isFlux ? 1.0 : (params.cfg || 7.0);
-  const modelName = isFlux ? "flux1-schnell-fp8.safetensors" : "sd_xl_base_1.0_fp8.safetensors";
+  // Stability never shipped an official fp8 SDXL base checkpoint under the name this used to
+  // reference, so nothing could ever load it - this is the real fp16 release. ComfyUI casts
+  // and offloads it to fit the 3060 Ti's 8 GB on its own.
+  const modelName = isFlux ? "flux1-schnell-fp8.safetensors" : "sd_xl_base_1.0.safetensors";
 
   const baseNegative = params.negativePrompt || "blurry, low quality, distorted";
 

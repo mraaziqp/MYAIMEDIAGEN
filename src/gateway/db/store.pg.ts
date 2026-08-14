@@ -49,6 +49,7 @@ function ensureSchema(): Promise<void> {
           reference_image_height INTEGER,
           status TEXT NOT NULL DEFAULT 'queued',
           percentage INTEGER NOT NULL DEFAULT 0,
+          phase TEXT,
           step INTEGER,
           max_steps INTEGER,
           node TEXT,
@@ -67,6 +68,10 @@ function ensureSchema(): Promise<void> {
           completed_at TIMESTAMPTZ
         );
       `;
+      // CREATE TABLE IF NOT EXISTS is a no-op against a table that already exists, so columns
+      // added after the first deploy need their own idempotent ALTER - without this, an
+      // existing `jobs` table would never gain `phase` and every write naming it would fail.
+      await sqlClient`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phase TEXT;`;
       await sqlClient`CREATE INDEX IF NOT EXISTS jobs_status_created_at_idx ON jobs (status, created_at);`;
       await sqlClient`
         CREATE TABLE IF NOT EXISTS worker_heartbeat (
@@ -144,6 +149,7 @@ export async function updateJobProgress(
       Job,
       | 'status'
       | 'percentage'
+      | 'phase'
       | 'step'
       | 'maxSteps'
       | 'node'
@@ -155,7 +161,14 @@ export async function updateJobProgress(
   >
 ): Promise<void> {
   await ensureSchema();
-  await db.update(jobs).set(patch).where(eq(jobs.id, id));
+  // Never resurrect a finished job. The worker's progress ticker and its terminal
+  // complete/fail call are separate round trips, so a tick already in flight can land after
+  // the job is done - without this guard that late write would overwrite the final row and
+  // set status back to 'processing', leaving a completed render stuck showing as running.
+  await db
+    .update(jobs)
+    .set(patch)
+    .where(sql`${jobs.id} = ${id} AND ${jobs.status} NOT IN ('completed', 'failed', 'interrupted')`);
 }
 
 export async function completeJob(
@@ -168,6 +181,13 @@ export async function completeJob(
     .set({
       status: 'completed',
       percentage: 100,
+      phase: 'done',
+      // Overwrite the last in-flight label. Without this a finished row keeps whatever the
+      // final tick wrote ("Saving image - 232s elapsed"), which then reads as the permanent
+      // description of the job everywhere it's listed, including the gallery.
+      nodeTitle: `Completed in ${(data.durationMs / 1000).toFixed(1)}s`,
+      etaSeconds: 0,
+      elapsedMs: data.durationMs,
       mediaUrl: data.mediaUrl,
       durationMs: data.durationMs,
       vramPeakMb: data.vramPeakMb,
@@ -183,7 +203,14 @@ export async function failJob(
   await ensureSchema();
   await db
     .update(jobs)
-    .set({ status: data.status, error: data.error, completedAt: new Date().toISOString() })
+    .set({
+      status: data.status,
+      phase: data.status === 'interrupted' ? 'interrupted' : 'failed',
+      nodeTitle: data.status === 'interrupted' ? 'Halted by user' : 'Failed',
+      etaSeconds: null,
+      error: data.error,
+      completedAt: new Date().toISOString(),
+    })
     .where(eq(jobs.id, id));
 }
 
@@ -226,6 +253,41 @@ export async function getDurationStats(): Promise<DurationStat[]> {
     stats.push({ modelType, avgDurationMs, sampleCount: rows.length });
   }
   return stats;
+}
+
+/**
+ * Mean wall-clock duration of the last few completed runs of one model, or null if that model
+ * has never completed here. Handed to the worker with the job it claims (see
+ * api/worker/next-job.ts) so it can report a real ETA during the model-load phase, where
+ * ComfyUI gives no step counter to extrapolate from. Null is meaningful and must be preserved
+ * rather than defaulted: with no history the worker reports elapsed only and no ETA at all,
+ * instead of inventing a number.
+ */
+export async function getAvgDurationMs(modelType: string): Promise<number | null> {
+  await ensureSchema();
+  const rows = await db
+    .select({ durationMs: jobs.durationMs })
+    .from(jobs)
+    .where(sql`${jobs.modelType} = ${modelType} AND ${jobs.status} = 'completed' AND ${jobs.durationMs} > 0`)
+    .orderBy(desc(jobs.createdAt))
+    .limit(DURATION_SAMPLE_SIZE);
+
+  if (rows.length === 0) return null;
+  return Math.round(rows.reduce((sum, r) => sum + r.durationMs, 0) / rows.length);
+}
+
+/**
+ * How many jobs are ahead of this one in the queue. The worker claims strictly oldest-first
+ * (claimNextJob), so "queued and older than me" is exactly the wait, letting the dashboard say
+ * "2 ahead" instead of an indefinite "waiting for your PC".
+ */
+export async function getQueuePosition(id: string): Promise<number> {
+  await ensureSchema();
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(jobs)
+    .where(sql`${jobs.status} = 'queued' AND ${jobs.createdAt} < (SELECT created_at FROM jobs WHERE id = ${id})`);
+  return row?.count ?? 0;
 }
 
 export async function upsertHeartbeat(data: {

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Activity, Clock, Cpu, Octagon, CheckCircle2, AlertTriangle, ShieldCheck, XCircle, Download, Share2, Check, ImagePlus, X, WifiOff, RefreshCw } from 'lucide-react';
-import { StreamProgressEvent, CloudJob } from '../types';
+import { StreamProgressEvent, CloudJob, JobPhase } from '../types';
 import { filenameFromMediaUrl, shareMedia } from '../lib/mediaShare';
 import { jobToProgressEvent } from '../lib/jobMapping';
 
@@ -10,8 +10,30 @@ const INITIAL_EVENT: Omit<StreamProgressEvent, 'promptId'> = {
   nodeTitle: 'Connecting to RTX 3060 Ti Gateway...',
   step: 0,
   maxSteps: 100,
-  percentage: 5,
+  percentage: 0,
 };
+
+// The render's real stages, in order. Shown as a strip so a long silent stretch is legible as
+// "we are in `loading`, three stages from the end" rather than an unexplained flat bar.
+const PHASE_SEQUENCE: { key: JobPhase; label: string }[] = [
+  { key: 'preparing', label: 'Prep' },
+  { key: 'loading', label: 'Load' },
+  { key: 'sampling', label: 'Sample' },
+  { key: 'decoding', label: 'Decode' },
+  { key: 'saving', label: 'Save' },
+  { key: 'uploading', label: 'Upload' },
+];
+
+// The worker posts progress every ~2s regardless of ComfyUI activity, so a row that hasn't
+// changed for materially longer than that is genuinely stuck - something a purely
+// event-driven reporter could never distinguish from a slow model load.
+const STALE_AFTER_MS = 12000;
+
+/** Raw seconds get unreadable past a minute, and these renders routinely run into minutes. */
+function formatSeconds(total: number): string {
+  if (total < 60) return `${total}s`;
+  return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`;
+}
 
 // Vercel functions can't hold an SSE connection open, so live progress is short polling
 // against GET /api/jobs/:id instead. POLL_INTERVAL_MS is the steady-state cadence; a failed
@@ -56,6 +78,13 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
   const serverElapsedRef = useRef<{ ms: number; receivedAt: number } | null>(null);
   const localStartRef = useRef<number>(Date.now());
 
+  // When the server's reported elapsedMs last actually CHANGED - not merely when a poll
+  // succeeded. A poll can keep returning 200 with an identical row while the worker is wedged,
+  // so freshness has to be judged on the data moving, not on the request succeeding.
+  const lastChangeRef = useRef<number>(Date.now());
+  const lastElapsedRef = useRef<number | null>(null);
+  const [isStalled, setIsStalled] = useState(false);
+
   // A new promptId means a fresh job (either a brand new trigger, or reattaching after a
   // refresh) - reset local state so a previous job's completed/failed card doesn't linger
   // underneath the new one, since this component instance isn't remounted when only the
@@ -67,6 +96,9 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
     setConnectionState('live');
     serverElapsedRef.current = null;
     localStartRef.current = Date.now();
+    lastChangeRef.current = Date.now();
+    lastElapsedRef.current = null;
+    setIsStalled(false);
     setElapsedSeconds(0);
   }, [promptId]);
 
@@ -84,6 +116,7 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
       } else {
         setElapsedSeconds(Math.round((Date.now() - localStartRef.current) / 1000));
       }
+      setIsStalled(Date.now() - lastChangeRef.current > STALE_AFTER_MS);
     }, 1000);
     return () => clearInterval(interval);
   }, [promptId, isDone]);
@@ -125,6 +158,14 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
         if (typeof data.elapsedMs === 'number') {
           serverElapsedRef.current = { ms: data.elapsedMs, receivedAt: Date.now() };
           setElapsedSeconds(Math.round(data.elapsedMs / 1000));
+          if (data.elapsedMs !== lastElapsedRef.current) {
+            lastElapsedRef.current = data.elapsedMs;
+            lastChangeRef.current = Date.now();
+            setIsStalled(false);
+          }
+        } else {
+          // Still queued: nothing is running yet, so "stalled" would be a false alarm.
+          lastChangeRef.current = Date.now();
         }
 
         if (data.status === 'completed' || data.status === 'failed' || data.status === 'interrupted') {
@@ -241,45 +282,108 @@ export const ProgressViewer: React.FC<ProgressViewerProps> = ({
         )}
       </div>
 
+      {/* Stalled banner - distinct from a connection drop: the poll is succeeding, but the
+          row it returns has stopped advancing, which means the worker or ComfyUI is wedged. */}
+      {!isDone && isStalled && connectionState === 'live' && (
+        <div className="mb-4 p-3 rounded-xl border bg-amber-950/40 border-amber-800/60 text-amber-300 text-xs flex items-center space-x-2">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>
+            No progress update for over {Math.round(STALE_AFTER_MS / 1000)}s. The worker reports every ~2s while
+            rendering, so it or ComfyUI may have stopped responding — check the Worker tab.
+          </span>
+        </div>
+      )}
+
       {/* Progress Bar */}
       <div className="mb-4">
         <div className="flex justify-between items-center text-xs font-mono mb-1.5">
           <span className="text-slate-400">
-            Step {event.step} / {event.maxSteps}
+            {/* Steps only exist while the sampler runs - showing "Step 0 / 100" during a
+                multi-minute model load implied progress that wasn't happening. */}
+            {event.step !== undefined && event.maxSteps
+              ? `Step ${event.step} / ${event.maxSteps}`
+              : event.phase
+              ? PHASE_SEQUENCE.find((p) => p.key === event.phase)?.label ?? event.phase
+              : 'Starting'}
           </span>
           <span className="text-cyan-300 font-bold">{event.percentage}%</span>
         </div>
         <div className="w-full bg-slate-950 rounded-full h-4 p-0.5 border border-slate-800 overflow-hidden relative">
           <div
-            className="h-full bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-500 rounded-full transition-all duration-300 shadow-lg shadow-cyan-500/30"
+            className={`h-full bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-500 rounded-full transition-all duration-300 shadow-lg shadow-cyan-500/30 ${
+              isStalled ? 'opacity-50' : ''
+            }`}
             style={{ width: `${event.percentage}%` }}
           />
         </div>
+
+        {/* Phase strip - which stage of the pipeline is running, and how many remain. */}
+        {!isDone && (
+          <div className="flex items-center gap-1 mt-2">
+            {PHASE_SEQUENCE.map((p) => {
+              const activeIndex = PHASE_SEQUENCE.findIndex((x) => x.key === event.phase);
+              const myIndex = PHASE_SEQUENCE.findIndex((x) => x.key === p.key);
+              const isActive = event.phase === p.key;
+              const isPast = activeIndex > -1 && myIndex < activeIndex;
+              return (
+                <div key={p.key} className="flex-1 min-w-0">
+                  <div
+                    className={`h-1 rounded-full ${
+                      isActive ? 'bg-cyan-400' : isPast ? 'bg-cyan-800' : 'bg-slate-800'
+                    }`}
+                  />
+                  <span
+                    className={`block text-[9px] mt-1 truncate font-semibold ${
+                      isActive ? 'text-cyan-300' : isPast ? 'text-slate-500' : 'text-slate-700'
+                    }`}
+                  >
+                    {p.label}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Metrics Row: ETA, Current Node, VRAM */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs mb-3 font-mono">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-3 font-mono">
         
+        {/* Elapsed is always shown - it was previously REPLACED by the ETA, so the one number
+            guaranteed to be real disappeared exactly when an estimate became available. */}
         <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5">
-          <span className="text-slate-400 text-[10px] uppercase font-sans block font-semibold">
-            {event.etaSeconds !== undefined ? 'ETA Remaining' : 'Elapsed'}
-          </span>
+          <span className="text-slate-400 text-[10px] uppercase font-sans block font-semibold">Elapsed</span>
           <div className="flex items-center space-x-1.5 text-cyan-300 mt-0.5 font-bold">
             <Clock className="w-3.5 h-3.5 text-cyan-400" />
-            <span>{event.etaSeconds !== undefined ? `${event.etaSeconds}s` : `${elapsedSeconds}s`}</span>
+            <span>{formatSeconds(elapsedSeconds)}</span>
           </div>
         </div>
 
         <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5">
-          <span className="text-slate-400 text-[10px] uppercase font-sans block font-semibold">Allocated VRAM</span>
+          <span className="text-slate-400 text-[10px] uppercase font-sans block font-semibold">ETA Remaining</span>
+          <div className="flex items-center space-x-1.5 text-cyan-300 mt-0.5 font-bold">
+            <Clock className="w-3.5 h-3.5 text-cyan-400" />
+            {/* No history for this model yet means no honest estimate exists - say so rather
+                than showing a fabricated number. */}
+            <span>{event.etaSeconds !== undefined ? formatSeconds(event.etaSeconds) : 'No estimate yet'}</span>
+          </div>
+        </div>
+
+        <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5">
+          <span className="text-slate-400 text-[10px] uppercase font-sans block font-semibold">VRAM (peak)</span>
           <div className="flex items-center space-x-1.5 text-indigo-300 mt-0.5 font-bold">
             <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{event.vramCurrentMb !== undefined ? `${(event.vramCurrentMb / 1024).toFixed(2)} GB` : '—'}</span>
+            <span>
+              {event.vramCurrentMb !== undefined ? `${(event.vramCurrentMb / 1024).toFixed(2)} GB` : '—'}
+              {event.vramPeakMb !== undefined && (
+                <span className="text-slate-500 font-normal"> ({(event.vramPeakMb / 1024).toFixed(2)})</span>
+              )}
+            </span>
           </div>
         </div>
 
         <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-2.5 col-span-2 sm:col-span-1">
-          <span className="text-slate-400 text-[10px] uppercase font-sans block font-semibold">Status</span>
+          <span className="text-slate-400 text-[10px] uppercase font-sans block font-semibold">Stage</span>
           <div className="flex items-center space-x-1 mt-0.5 font-bold">
             {event.status === 'completed' ? (
               <span className="text-emerald-400 flex items-center space-x-1">

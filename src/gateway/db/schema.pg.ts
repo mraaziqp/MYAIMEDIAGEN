@@ -26,6 +26,11 @@ export const jobs = pgTable('jobs', {
   referenceImageHeight: integer('reference_image_height'),
   status: text('status').notNull().default('queued'),
   percentage: integer('percentage').notNull().default(0),
+  // Which stage of the render this row is in: preparing | loading | sampling | decoding |
+  // saving | uploading. `status` only distinguishes queued/processing/terminal, which is far
+  // too coarse to explain a 233s Flux run that spends ~200s of it in `loading` emitting no
+  // ComfyUI events at all. Nullable so pre-existing rows (and any non-worker writer) stay valid.
+  phase: text('phase'),
   step: integer('step'),
   maxSteps: integer('max_steps'),
   node: text('node'),

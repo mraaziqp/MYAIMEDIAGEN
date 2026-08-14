@@ -35,8 +35,13 @@ to work; the dashboard itself just reads whatever the worker last reported.
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) running locally (default `http://127.0.0.1:8188`)
   with checkpoints matching the built-in workflows:
   - `flux1-schnell-fp8.safetensors` (fast image)
-  - `sd_xl_base_1.0_fp8.safetensors` (HD image)
-  - `svd_xt_1_1.safetensors` (short video)
+  - `sd_xl_base_1.0.safetensors` (HD image)
+  - `svd_xt.safetensors` (short video - SVD-XT 1.0; the 1.1 weights are behind a gated
+    HuggingFace repo and 401 without an accepted license)
+
+  Checkpoints don't have to live inside the ComfyUI install - an `extra_model_paths.yaml`
+  next to ComfyUI's `main.py` can point at any drive, and is auto-loaded on startup
+  alongside (not instead of) whatever `--extra-model-paths-config` is passed.
 - A Vercel account with a Postgres integration (Neon) and a Blob store connected to this project
 
 ## Cloud deployment (one-time)

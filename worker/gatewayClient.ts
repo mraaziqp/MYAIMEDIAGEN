@@ -18,23 +18,32 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
 }
 
 /** Claims the next queued job, or null if the queue is empty. */
-export async function fetchNextJob(): Promise<Job | null> {
+export async function fetchNextJob(): Promise<ClaimedJob | null> {
   const res = await request('/api/worker/next-job');
   if (res.status === 204) return null;
   if (!res.ok) throw new Error(`GET /api/worker/next-job failed: HTTP ${res.status}`);
   return res.json();
 }
 
+export type JobPhase = 'preparing' | 'loading' | 'sampling' | 'decoding' | 'saving' | 'uploading';
+
 export interface ProgressPatch {
   percentage?: number;
-  step?: number;
-  maxSteps?: number;
+  phase?: JobPhase;
+  // Nullable, not just optional: once sampling ends the step counter must be actively cleared.
+  // Omitting it leaves the previous value in the row, so a finished sampler kept showing
+  // "Step 4 / 4" all through decode and save as though it were still counting.
+  step?: number | null;
+  maxSteps?: number | null;
   node?: string;
   nodeTitle?: string;
   etaSeconds?: number;
   elapsedMs?: number;
   vramCurrentMb?: number;
 }
+
+/** A claimed job, plus the historical average this model takes (null if never completed). */
+export type ClaimedJob = Job & { avgDurationMs: number | null };
 
 /** Returns whether the cloud has flagged this job for interruption since the last check. */
 export async function postProgress(jobId: string, patch: ProgressPatch): Promise<{ interruptRequested: boolean }> {

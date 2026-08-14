@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectUnlessWorker } from '../../src/gateway/cloudAuth.js';
-import { claimNextJob } from '../../src/gateway/db/store.pg.js';
+import { claimNextJob, getAvgDurationMs } from '../../src/gateway/db/store.pg.js';
 
 /**
  * Polled by the local worker every ~2s (see worker/index.ts). This is the only inbound
@@ -13,5 +13,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const job = await claimNextJob();
   if (!job) return res.status(204).end();
-  res.status(200).json(job);
+
+  // The worker holds no job history of its own, so the historical average rides along with the
+  // claim. Null when this model has never completed here - the worker must treat that as
+  // "no ETA available", not as zero.
+  const avgDurationMs = await getAvgDurationMs(job.modelType);
+  res.status(200).json({ ...job, avgDurationMs });
 }

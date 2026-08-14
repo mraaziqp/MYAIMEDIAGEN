@@ -157,9 +157,21 @@ export type SystemStats = HardwareTelemetry;
 /**
  * Server-Sent Events (SSE) Progress Payload
  */
+/**
+ * Stage of a render, reported by the worker on every progress tick. Distinct from `status`,
+ * which only says queued/processing/terminal - `phase` is what lets the UI explain a long
+ * silent stretch as "streaming model weights" rather than an unexplained stall.
+ */
+export type JobPhase = 'preparing' | 'loading' | 'sampling' | 'decoding' | 'saving' | 'uploading' | 'done' | 'failed' | 'interrupted';
+
 export interface SSEProgressPayload {
   promptId: string;
   percentage: number;
+  phase?: JobPhase;
+  /** Jobs ahead of this one in the queue; only present while status is 'queued'. */
+  queuePosition?: number;
+  /** Whether the PC worker is currently reporting in; only present while status is 'queued'. */
+  workerOnline?: boolean;
   step?: number;
   maxSteps?: number;
   node?: string;
@@ -211,6 +223,10 @@ export interface CloudJob {
   referenceImageHeight: number | null;
   status: 'queued' | 'claimed' | 'processing' | 'completed' | 'failed' | 'interrupted';
   percentage: number;
+  phase: JobPhase | null;
+  /** Added by GET /api/jobs/:id for queued rows only - not a stored column. */
+  queuePosition?: number;
+  workerOnline?: boolean;
   step: number | null;
   maxSteps: number | null;
   node: string | null;

@@ -15,4 +15,6 @@ coverage/
 # Stale full-project export snapshot, not source of truth
 *.zip
 
+# Vercel CLI project link (.vercel) and the env files `vercel env pull` writes. Both are
+# appended automatically by `vercel link`; .env* above already covers the latter.
 .vercel

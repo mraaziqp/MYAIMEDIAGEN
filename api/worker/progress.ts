@@ -11,12 +11,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (rejectUnlessWorker(req, res)) return;
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const { jobId, percentage, step, maxSteps, node, nodeTitle, etaSeconds, elapsedMs, vramCurrentMb } = req.body || {};
+  const { jobId, percentage, phase, step, maxSteps, node, nodeTitle, etaSeconds, elapsedMs, vramCurrentMb } =
+    req.body || {};
   if (!jobId) return res.status(400).json({ error: 'jobId is required' });
 
   await updateJobProgress(jobId, {
     status: 'processing',
     percentage,
+    phase,
     step,
     maxSteps,
     node,
