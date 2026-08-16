@@ -46,6 +46,44 @@ const GPU_READ_TTL_MS = 1500;
 let gpuCache: { reading: GpuReading; at: number } | null = null;
 let gpuInFlight: Promise<GpuReading> | null = null;
 
+/**
+ * Lowest VRAM-used figure seen so far, i.e. the idle floor: CUDA context plus whatever other
+ * processes hold, with no model loaded. Anything above it is memory ComfyUI can hand back.
+ *
+ * This replaces ComfyUI's `torch_vram_total` as the basis for "reclaimable". That field looked
+ * like the right answer but is wrong on this setup: measured directly, it reported 64 MB while
+ * ComfyUI's /free went on to release 4580 MB. The GPU runs torch's `cudaMallocAsync` allocator
+ * (visible in the device name), under which the reserved-bytes counter does not track real
+ * usage - so trusting it would report "nothing to reclaim" with 4.5 GB genuinely wasted.
+ *
+ * A running minimum needs no persistence and cannot overstate: it only ever falls, and every
+ * idle moment refines it. SAMPLES_BEFORE_TRUSTED avoids publishing a figure derived from a
+ * floor that is really just "the first reading we happened to take" - until then the value is
+ * reported as unknown, which callers must treat as "not measured", never as zero.
+ */
+let observedFloorMb: number | null = null;
+let floorSampleCount = 0;
+const SAMPLES_BEFORE_TRUSTED = 4;
+
+/** Reset after a purge so the post-purge idle reading can re-establish the floor immediately. */
+export function noteVramPurged(usedMbAfterPurge: number): void {
+  observedFloorMb = observedFloorMb === null ? usedMbAfterPurge : Math.min(observedFloorMb, usedMbAfterPurge);
+}
+
+function recordFloor(usedMb: number): void {
+  observedFloorMb = observedFloorMb === null ? usedMb : Math.min(observedFloorMb, usedMb);
+  floorSampleCount += 1;
+}
+
+/** Memory ComfyUI is holding above the idle floor, or undefined while the floor is unproven. */
+export function estimateReclaimableMb(currentUsedMb: number, torchReservedMb?: number): number | undefined {
+  if (observedFloorMb === null || floorSampleCount < SAMPLES_BEFORE_TRUSTED) return undefined;
+  const aboveFloor = Math.max(0, currentUsedMb - observedFloorMb);
+  // Take whichever signal claims more. Either one reading high is evidence there is something
+  // to free; requiring both to agree would reintroduce the false negative this replaced.
+  return Math.max(aboveFloor, torchReservedMb ?? 0);
+}
+
 async function readGpu(): Promise<GpuReading> {
   if (gpuCache && Date.now() - gpuCache.at < GPU_READ_TTL_MS) return gpuCache.reading;
   if (gpuInFlight) return gpuInFlight;
@@ -53,6 +91,7 @@ async function readGpu(): Promise<GpuReading> {
   gpuInFlight = queryNvidiaSmi()
     .then((reading) => {
       gpuCache = { reading, at: Date.now() };
+      recordFloor(reading.vramUsedMb);
       return reading;
     })
     .finally(() => {
@@ -195,7 +234,9 @@ export async function getSystemStatsInternal(comfyUrl: string = 'http://127.0.0.
     isTunnelConnected: comfyOnline,
     systemRamTotalMb,
     systemRamFreeMb,
-    reclaimableVramMb: comfy.torchVramReservedMb,
+    // Only meaningful when ComfyUI is actually up - it is the only process whose memory this
+    // app can release, so attributing headroom to it while it is down would be a false offer.
+    reclaimableVramMb: comfyOnline ? estimateReclaimableMb(gpu.vramUsedMb, comfy.torchVramReservedMb) : undefined,
     preflightCheck: {
       passed: preflight.passed,
       recommendedMediaType: preflight.recommendedMediaType,

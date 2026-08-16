@@ -88,7 +88,13 @@ const CLASS_LABELS: Array<{ match: RegExp; phase: JobPhase; label: string }> = [
   { match: /CLIPVisionLoader|IPAdapter|InsightFace|LoraLoader/, phase: 'loading', label: 'Loading face-identity adapters' },
   { match: /LoadImage|ImageScale|RembgForegroundMask/, phase: 'preparing', label: 'Preparing the reference image' },
   { match: /SVD_img2vid_Conditioning/, phase: 'loading', label: 'Building video conditioning' },
-  { match: /KSampler/, phase: 'sampling', label: 'Denoising latents' },
+  // Deliberately 'loading', not 'sampling'. ComfyUI marks the KSampler node as executing the
+  // moment it is reached, but that node loads the checkpoint lazily before it denoises
+  // anything - measured here at ~3.5 minutes of "executing KSampler" before the first step
+  // arrived on a cold 16 GB Flux load. Trusting the node id alone therefore reported model
+  // loading as sampling and drove the bar deep into the sampling band while no step had run.
+  // The switch to 'sampling' happens on the first real progress message instead.
+  { match: /KSampler/, phase: 'loading', label: 'Loading model weights for the sampler' },
   { match: /VAEDecode/, phase: 'decoding', label: 'Decoding latents to pixels' },
   { match: /ImageCompositeMasked/, phase: 'decoding', label: 'Compositing original faces back in' },
   { match: /SaveImage|SaveAnimatedWEBP/, phase: 'saving', label: 'Saving the result' },
@@ -367,7 +373,12 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
 
           // Live step-rate extrapolation beats the historical average once sampling is
           // underway: it reflects this run's actual speed on this resolution and step count.
-          if (value > 0) {
+          //
+          // Needs >= 2 steps of evidence. samplingStartTime is stamped on the FIRST progress
+          // message, so at value=1 the measured elapsed-since-start is ~0, giving msPerStep ~0
+          // and an ETA of "0s" on a render with steps still to go - observed exactly that on
+          // a 4-step Flux run. Below the threshold, leave the historical estimate in place.
+          if (value >= 2) {
             const msPerStep = (Date.now() - samplingStartTime) / value;
             etaSeconds = Math.max(0, Math.round((msPerStep * (max - value)) / 1000));
           }

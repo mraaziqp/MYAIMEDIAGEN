@@ -19,7 +19,15 @@ export const db = drizzle(sqlClient, { schema: { jobs, workerHeartbeat } });
 
 // A heartbeat older than this is treated as the worker/PC being offline - never assumed
 // online just because a row exists in the table.
-const HEARTBEAT_STALE_MS = 15_000;
+/**
+ * Grace before the PC is declared offline. This must be several heartbeat intervals, not one
+ * or two: at 15s against a ~7s heartbeat the margin was under a single beat, so one slow
+ * Vercel/Neon cold start was enough to report a healthy worker as offline - the "randomly goes
+ * offline" flicker. At 30s against the worker's fixed 5s cadence, six consecutive heartbeats
+ * must be lost before the dashboard changes its mind, while a genuinely dead worker is still
+ * caught within half a minute.
+ */
+const HEARTBEAT_STALE_MS = 30_000;
 
 const HEARTBEAT_ROW_ID = 'default';
 

@@ -3,11 +3,13 @@ import 'dotenv/config';
 
 import { fetchNextJob, postHeartbeat } from './gatewayClient.js';
 import { runJob } from './runJob.js';
-import { getSystemStatsInternal, readGpuVram, GpuTelemetryError } from '../src/gateway/vramMonitor.js';
+import { getSystemStatsInternal, readGpuVram, noteVramPurged, GpuTelemetryError } from '../src/gateway/vramMonitor.js';
 
 const COMFY_URL = process.env.COMFYUI_URL || 'http://127.0.0.1:8188';
 const POLL_INTERVAL_MS = 2000;
-const HEARTBEAT_INTERVAL_MS = 7000;
+// Nominal gap between heartbeats. The loop below subtracts the time its own work took, so this
+// is the actual period rather than a floor - see the comment there for why that matters.
+const HEARTBEAT_INTERVAL_MS = 5000;
 const ERROR_BACKOFF_MS = 5000;
 
 let shuttingDown = false;
@@ -56,8 +58,15 @@ async function executeFreeVramAndSync(): Promise<void> {
   // 3. Give CUDA memory allocator 1.2s to release memory back to driver
   await sleep(1200);
 
-  // 4. Read fresh hardware telemetry immediately and push to cloud without waiting 7s!
+  // 4. Read fresh hardware telemetry immediately and push to cloud without waiting a full cycle.
   try {
+    // A just-purged GPU is by definition at its idle floor, so this is the most reliable
+    // calibration point there is - feed it in before computing the next reclaimable figure.
+    try {
+      noteVramPurged((await readGpuVram()).vramUsedMb);
+    } catch {
+      // Non-fatal: the floor simply keeps whatever value it already had.
+    }
     const stats = await getSystemStatsInternal(COMFY_URL);
     await postHeartbeat({
       device: stats.device,
@@ -89,6 +98,12 @@ async function executeFreeVramAndSync(): Promise<void> {
  */
 async function heartbeatLoop(): Promise<void> {
   while (!shuttingDown) {
+    // Timed from the START of the cycle, not the end. Sleeping a flat interval AFTER the work
+    // made the real period `interval + nvidia-smi + ComfyUI probe + Vercel round trip`, so a
+    // single cold serverless start (3-8s) stretched the gap past the staleness threshold and
+    // the dashboard flashed "Worker Offline" while the worker was perfectly healthy. Holding a
+    // fixed cadence keeps the gap stable no matter how slow one round trip happens to be.
+    const cycleStartedAt = Date.now();
     try {
       const stats = await getSystemStatsInternal(COMFY_URL);
       const res = await postHeartbeat({
@@ -112,7 +127,8 @@ async function heartbeatLoop(): Promise<void> {
         console.error('[worker] Heartbeat failed:', err);
       }
     }
-    await sleep(HEARTBEAT_INTERVAL_MS);
+    // Never go fully busy-loop if a cycle somehow overran the whole interval.
+    await sleep(Math.max(500, HEARTBEAT_INTERVAL_MS - (Date.now() - cycleStartedAt)));
   }
 }
 

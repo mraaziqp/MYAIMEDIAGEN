@@ -16,6 +16,7 @@ import {
   X,
   HardDrive,
   AlertOctagon,
+  Loader2,
 } from 'lucide-react';
 import { CloudJob } from '../types';
 import { filenameFromMediaUrl, shareMedia } from '../lib/mediaShare';
@@ -154,11 +155,30 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
               {/* Media Container */}
               <div className="relative aspect-video bg-slate-950 overflow-hidden cursor-pointer" onClick={() => setSelectedRecord(item)}>
                 {!item.mediaUrl ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center text-rose-400/80 space-y-1.5">
-                    <AlertOctagon className="w-6 h-6" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wide">
-                      {item.status === 'failed' ? 'Render Failed' : 'No Media'}
-                    </span>
+                  // A row without media is not automatically a failure - queued and in-flight
+                  // jobs land here too, and labelling those "No Media" made a job that was
+                  // simply waiting look broken. Failures additionally show WHY: the precise
+                  // reason is already stored on every row and was being discarded, leaving an
+                  // unexplained red card that gave the user nothing to act on.
+                  <div className="w-full h-full flex flex-col items-center justify-center px-3 text-center space-y-1.5">
+                    {item.status === 'failed' || item.status === 'interrupted' ? (
+                      <>
+                        <AlertOctagon className="w-6 h-6 text-rose-400/80" />
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-rose-400/80">
+                          {item.status === 'interrupted' ? 'Halted' : 'Render Failed'}
+                        </span>
+                        {item.error && (
+                          <span className="text-[10px] leading-snug text-slate-400 line-clamp-3">{item.error}</span>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <Loader2 className="w-6 h-6 text-cyan-400/80 animate-spin" />
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-cyan-400/80">
+                          {item.status === 'queued' ? 'Queued' : 'Rendering'}
+                        </span>
+                      </>
+                    )}
                   </div>
                 ) : item.mediaUrl.endsWith('.mp4') ? (
                   <video
@@ -291,11 +311,29 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
             {/* Media Preview */}
             <div className="mb-4 rounded-xl overflow-hidden bg-slate-950 border border-slate-800">
               {!selectedRecord.mediaUrl ? (
-                <div className="w-full h-48 flex flex-col items-center justify-center text-rose-400/80 space-y-2">
-                  <AlertOctagon className="w-8 h-8" />
-                  <span className="text-xs font-semibold uppercase tracking-wide">
-                    {selectedRecord.status === 'failed' ? 'Render Failed - No Media Produced' : 'No Media'}
-                  </span>
+                <div className="w-full min-h-48 flex flex-col items-center justify-center px-5 py-6 text-center space-y-2">
+                  {selectedRecord.status === 'failed' || selectedRecord.status === 'interrupted' ? (
+                    <>
+                      <AlertOctagon className="w-8 h-8 text-rose-400/80" />
+                      <span className="text-xs font-semibold uppercase tracking-wide text-rose-400/80">
+                        {selectedRecord.status === 'interrupted' ? 'Halted by user' : 'Render failed - no media produced'}
+                      </span>
+                      {/* Full text here, untruncated - the card only had room for a preview,
+                          and this is where a user comes to find out what actually went wrong. */}
+                      {selectedRecord.error && (
+                        <p className="text-[11px] leading-relaxed text-slate-300 bg-slate-950/80 border border-slate-800 rounded-lg p-3 font-mono text-left max-w-full overflow-x-auto">
+                          {selectedRecord.error}
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <Loader2 className="w-8 h-8 text-cyan-400/80 animate-spin" />
+                      <span className="text-xs font-semibold uppercase tracking-wide text-cyan-400/80">
+                        {selectedRecord.status === 'queued' ? 'Queued - waiting for your PC' : 'Rendering on your GPU'}
+                      </span>
+                    </>
+                  )}
                 </div>
               ) : selectedRecord.mediaUrl.endsWith('.mp4') ? (
                 <video src={selectedRecord.mediaUrl} controls autoPlay loop className="w-full max-h-80 object-contain" />
