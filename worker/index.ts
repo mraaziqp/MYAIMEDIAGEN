@@ -3,7 +3,7 @@ import 'dotenv/config';
 
 import { fetchNextJob, postHeartbeat } from './gatewayClient.js';
 import { runJob } from './runJob.js';
-import { getSystemStatsInternal, GpuTelemetryError } from '../src/gateway/vramMonitor.js';
+import { getSystemStatsInternal, readGpuVram, GpuTelemetryError } from '../src/gateway/vramMonitor.js';
 
 const COMFY_URL = process.env.COMFYUI_URL || 'http://127.0.0.1:8188';
 const POLL_INTERVAL_MS = 2000;
@@ -26,6 +26,17 @@ async function executeFreeVramAndSync(): Promise<void> {
   if (isJobRunning) return;
   console.log('[worker] Purge VRAM signal detected. Calling ComfyUI /free to unload models & purge GPU memory...');
   const cleanUrl = COMFY_URL.replace(/\/$/, '');
+
+  // Measured before the purge so the amount reported back is the memory this action actually
+  // recovered, not just how much happens to be free afterwards - the latter includes VRAM
+  // other processes were never holding, and would credit the purge with freeing it.
+  let vramUsedBeforeMb: number | null = null;
+  try {
+    vramUsedBeforeMb = (await readGpuVram()).vramUsedMb;
+  } catch {
+    // Non-fatal: the purge still runs, the reclaimed figure is just reported as unknown.
+  }
+
   try {
     // 1. Send /interrupt in case anything is paused
     await fetch(`${cleanUrl}/interrupt`, { method: 'POST' }).catch(() => {});
@@ -57,9 +68,13 @@ async function executeFreeVramAndSync(): Promise<void> {
       systemRamTotalMb: stats.systemRamTotalMb,
       comfyOnline: stats.status === 'ONLINE',
       reclaimableVramMb: stats.reclaimableVramMb,
-      freeVramHandledReclaimedMb: stats.vramFreeMb,
+      freeVramHandledReclaimedMb:
+        vramUsedBeforeMb !== null ? Math.max(0, vramUsedBeforeMb - stats.vramUsedMb) : 0,
     });
-    console.log(`[worker] VRAM freed successfully! Free VRAM now: ${stats.vramFreeMb} MB. Synced to cloud.`);
+    const reclaimed = vramUsedBeforeMb !== null ? Math.max(0, vramUsedBeforeMb - stats.vramUsedMb) : null;
+    console.log(
+      `[worker] VRAM purge done. Reclaimed ${reclaimed === null ? 'unknown' : `${reclaimed} MB`}; free VRAM now ${stats.vramFreeMb} MB. Synced to cloud.`
+    );
   } catch (err) {
     console.error('[worker] Failed to sync telemetry after freeing VRAM:', err);
   }

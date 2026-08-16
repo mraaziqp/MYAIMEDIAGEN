@@ -57,9 +57,24 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
 
   const preflight = stats.preflightCheck;
 
+  // ComfyUI's /free can only hand back what its own torch allocator is holding (loaded weights
+  // plus cache pool), which is what reclaimableVramMb measures - the rest of the GPU's used
+  // VRAM belongs to other processes and is untouchable. Below this threshold a purge is churn:
+  // it unloads models that will simply be re-read from disk on the next render, costing a cold
+  // load (~233s for Flux here) to recover a rounding error.
+  const RECLAIM_THRESHOLD_MB = 256;
+  // Undefined means the worker hasn't reported the figure (older worker, or ComfyUI
+  // unreachable). Unknown is not the same as zero, so allow the action rather than block on
+  // an absent measurement.
+  const hasReclaimable =
+    stats.reclaimableVramMb == null || stats.reclaimableVramMb >= RECLAIM_THRESHOLD_MB;
+  const reclaimTitle = hasReclaimable
+    ? 'Unload ComfyUI’s loaded models and purge its PyTorch CUDA cache, returning that VRAM to the GPU'
+    : 'ComfyUI is not currently holding any releasable VRAM - there is nothing a purge could free';
+
   return (
     <div className="bg-slate-900/90 border border-slate-800/90 rounded-2xl p-5 sm:p-6 shadow-xl text-slate-100 relative overflow-hidden">
-      
+
       {/* Background ambient glow */}
       <div className="absolute top-0 right-0 w-80 h-32 bg-cyan-500/5 blur-3xl pointer-events-none -z-0" />
 
@@ -87,16 +102,25 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
           {onFreeVram && (
             <button
               onClick={onFreeVram}
-              disabled={isFreeingVram || stats.status !== 'ONLINE'}
+              disabled={isFreeingVram || stats.status !== 'ONLINE' || !hasReclaimable}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 shadow-lg active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${
-                isVramLow
+                isVramLow && hasReclaimable
                   ? 'bg-gradient-to-r from-rose-600 via-rose-500 to-amber-500 hover:from-rose-500 hover:to-amber-400 text-white shadow-rose-500/25 ring-2 ring-rose-500/50 animate-pulse'
                   : 'bg-cyan-600 hover:bg-cyan-500 text-white shadow-cyan-500/25'
               }`}
-              title="Unload loaded models from GPU memory and purge PyTorch CUDA memory cache in ComfyUI"
+              title={reclaimTitle}
             >
               <Trash2 className={`w-4 h-4 ${isFreeingVram ? 'animate-spin' : ''}`} />
-              <span className="tracking-wide">{isFreeingVram ? 'FREEING VRAM...' : 'FREE VRAM'}</span>
+              {/* Naming the real figure is the point of the whole reclaimable measurement:
+                  "RECLAIM 3.2 GB" is a promise the worker can keep, where a bare "FREE VRAM"
+                  invited a purge that frees nothing whenever ComfyUI holds nothing. */}
+              <span className="tracking-wide">
+                {isFreeingVram
+                  ? 'FREEING VRAM...'
+                  : hasReclaimable
+                  ? `RECLAIM ${(stats.reclaimableVramMb! / 1024).toFixed(1)} GB`
+                  : 'NOTHING TO RECLAIM'}
+              </span>
             </button>
           )}
 
@@ -210,15 +234,33 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
                   </div>
                 </div>
 
-                {onFreeVram && (
+                {/* Low VRAM with nothing reclaimable is a genuinely different situation, and
+                    the most useful thing the UI can do is say so: the memory is held by some
+                    other process, so a purge cannot help and offering one just wastes a cold
+                    model reload. */}
+                {onFreeVram && hasReclaimable && (
                   <button
                     onClick={onFreeVram}
                     disabled={isFreeingVram}
                     className="px-4 py-2 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white font-extrabold rounded-xl text-xs shrink-0 flex items-center justify-center space-x-2 transition-all shadow-lg active:scale-95 disabled:opacity-50 tracking-wide ring-2 ring-rose-400/30"
+                    title={reclaimTitle}
                   >
                     <Trash2 className={`w-4 h-4 ${isFreeingVram ? 'animate-spin' : ''}`} />
-                    <span>{isFreeingVram ? 'PURGING VRAM...' : 'FREE VRAM NOW'}</span>
+                    <span>
+                      {isFreeingVram
+                        ? 'PURGING VRAM...'
+                        : stats.reclaimableVramMb != null
+                        ? `RECLAIM ${(stats.reclaimableVramMb / 1024).toFixed(1)} GB`
+                        : 'FREE VRAM NOW'}
+                    </span>
                   </button>
+                )}
+
+                {onFreeVram && !hasReclaimable && (
+                  <span className="text-[11px] text-amber-300/80 shrink-0 max-w-[16rem]">
+                    ComfyUI isn’t holding any releasable VRAM — this memory belongs to another
+                    process, so a purge won’t recover it.
+                  </span>
                 )}
               </div>
             ))}

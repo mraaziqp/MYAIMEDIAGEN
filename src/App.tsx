@@ -56,18 +56,37 @@ export default function App() {
   // of the old one's 4.5s rather than its own. Tracking the handle fixes both.
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Every deferred callback in this component goes through here so none can outlive the mount.
+  // The VRAM purge handler alone scheduled five bare timers per click - stacking on repeated
+  // clicks and still firing (setting state on an unmounted tree) if the user navigated away
+  // mid-purge. Tracking them in a set makes cleanup a single sweep.
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+
+  const schedule = useCallback((fn: () => void, delayMs: number) => {
+    const id = setTimeout(() => {
+      timersRef.current.delete(id);
+      fn();
+    }, delayMs);
+    timersRef.current.add(id);
+    return id;
+  }, []);
+
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      timers.forEach(clearTimeout);
+      timers.clear();
+    };
+  }, []);
+
   const showToast = useCallback((type: 'info' | 'success' | 'error', message: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ type, message });
-    toastTimerRef.current = setTimeout(() => {
+    toastTimerRef.current = schedule(() => {
       setToast(null);
       toastTimerRef.current = null;
     }, 4500);
-  }, []);
-
-  useEffect(() => () => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-  }, []);
+  }, [schedule]);
 
   const fetchTelemetry = useCallback(async () => {
     try {
@@ -138,17 +157,15 @@ export default function App() {
         throw new Error(data?.error || data?.details || 'Failed to free VRAM');
       }
       showToast('info', 'Purge signal sent - worker is unloading models & clearing GPU cache...');
-      // Rapid telemetry polling to reflect the worker's memory release immediately
-      setTimeout(fetchTelemetry, 600);
-      setTimeout(fetchTelemetry, 1600);
-      setTimeout(fetchTelemetry, 3000);
-      setTimeout(fetchTelemetry, 5500);
+      // The worker only sees the request on its next poll and then needs a moment for CUDA to
+      // hand memory back, so re-read telemetry a few times across that window rather than once.
+      [600, 1600, 3000, 5500].forEach((delay) => schedule(fetchTelemetry, delay));
     } catch (err: any) {
       showToast('error', err?.message || 'Failed to purge VRAM');
     } finally {
-      setTimeout(() => setIsFreeingVram(false), 2000);
+      schedule(() => setIsFreeingVram(false), 2000);
     }
-  }, [isFreeingVram, showToast, fetchTelemetry]);
+  }, [isFreeingVram, showToast, fetchTelemetry, schedule]);
 
   const handleGenerate = async (params: WorkflowParams) => {
     setIsSubmitting(true);
@@ -227,7 +244,7 @@ export default function App() {
 
   const handleFunctionCallTriggered = () => {
     fetchTelemetry();
-    setTimeout(fetchJobs, 1500);
+    schedule(fetchJobs, 1500);
   };
 
   return (
