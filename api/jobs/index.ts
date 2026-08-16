@@ -52,12 +52,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // right before dispatch (vramMonitor.ts's runPreflightCheck, same function, real-time
       // data) - this is only here to fail fast with a clear message instead of silently
       // queuing a job that will just bounce off the worker's real guardrail.
+      // Only refuse what is physically impossible. This used to reject on FREE VRAM from the
+      // last heartbeat, which broke back-to-back generation: the previous render's model is
+      // still resident at that moment, so the second job was turned away before the worker
+      // could unload it - and it now does exactly that automatically before dispatch (see
+      // runJob's preflight). A stale heartbeat made it worse still, rejecting against numbers
+      // from a PC that might have been idle for hours. Total VRAM is the only figure here that
+      // no amount of unloading can change, so it is the only one worth blocking on.
       const { heartbeat } = await getHeartbeatStatus();
-      if (heartbeat) {
-        const preflight = runPreflightCheck(heartbeat.vramFreeMb ?? 0, finalMediaType);
+      const totalVramMb = heartbeat?.vramTotalMb ?? 0;
+      if (totalVramMb > 0) {
+        const preflight = runPreflightCheck(totalVramMb, finalMediaType);
         if (!preflight.passed) {
           return res.status(422).json({
-            error: `OOM Pre-flight Guardrail: this model needs ${preflight.requiredFreeMb} MB free VRAM, only ${heartbeat.vramFreeMb} MB was available as of the last heartbeat.`,
+            error: `This GPU has ${totalVramMb} MB of VRAM in total, but ${finalMediaType} needs ${preflight.requiredFreeMb} MB - it cannot fit even with nothing else loaded.`,
             oomRisk: true,
           });
         }

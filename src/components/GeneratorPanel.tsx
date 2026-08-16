@@ -163,9 +163,23 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
 
   const isOnline = stats?.status === 'ONLINE' || (stats?.online === true && stats?.vramTotalMb > 0);
   const gpuUnavailable = !stats || !isOnline;
-  const vramCritical = !!stats && isOnline && freeVramMb < requiredVramMb;
+
+  // Deliberately NOT a submit blocker. This is a queue: a job posted while the PC is off sits
+  // as `queued` until the worker claims it, which is the whole point of being able to use this
+  // from a phone away from the machine. Blocking submission threw away that capability and
+  // contradicted the queued-state message the UI already shows ("this will start as soon as
+  // the worker is running"). The button below just changes wording instead.
+  const willQueueForLater = gpuUnavailable;
+
+  // Low free VRAM is no longer a hard block either: the worker unloads ComfyUI's resident
+  // model and re-checks before giving up (see runJob's preflight), so back-to-back renders
+  // recover on their own. Only refuse when the shortfall cannot be resolved that way - i.e.
+  // the GPU physically cannot fit this model even with nothing loaded.
+  const vramUnfixable = !!stats && isOnline && (stats.vramTotalMb ?? 0) > 0 && (stats.vramTotalMb ?? 0) < requiredVramMb;
+  const vramTight = !!stats && isOnline && freeVramMb < requiredVramMb && !vramUnfixable;
+
   const submitBlocked =
-    isGenerating || !prompt.trim() || gpuUnavailable || vramCritical || isUploading || referenceImageMissing;
+    isGenerating || !prompt.trim() || vramUnfixable || isUploading || referenceImageMissing;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -441,38 +455,61 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
 
         </div>
 
-        {/* GPU Unavailable / Insufficient VRAM Hard Block */}
-        {(gpuUnavailable || vramCritical) && (
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl bg-rose-950/50 border border-rose-800/70 text-rose-200 text-xs gap-3 shadow-lg">
+        {/* Informational now, not a block - these states are all recoverable without the user
+            doing anything, so they explain what will happen rather than refusing the render. */}
+        {vramUnfixable && (
+          <div className="flex items-start space-x-2.5 p-3.5 rounded-xl bg-rose-950/50 border border-rose-800/70 text-rose-200 text-xs shadow-lg">
+            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold block text-rose-100">Model too large for this GPU</span>
+              <span className="text-[11px] text-rose-300/90">
+                This model needs {requiredVramMb} MB but the card only has {stats?.vramTotalMb} MB in total, so no
+                amount of unloading will make it fit.
+              </span>
+            </div>
+          </div>
+        )}
+
+        {willQueueForLater && !vramUnfixable && (
+          <div className="flex items-start space-x-2.5 p-3.5 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-200 text-xs shadow-lg">
+            <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-bold block text-amber-100">Your PC is offline</span>
+              <span className="text-[11px] text-amber-300/90">
+                You can still queue this render - it will start automatically the moment your worker comes back online.
+              </span>
+            </div>
+          </div>
+        )}
+
+        {vramTight && !willQueueForLater && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl bg-slate-800/60 border border-slate-700 text-slate-300 text-xs gap-3">
             <div className="flex items-start space-x-2.5">
-              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <div>
-                <span className="font-bold block text-rose-100">
-                  {gpuUnavailable ? 'GPU Telemetry Offline' : 'Insufficient Free VRAM for Model'}
-                </span>
-                <span className="text-[11px] text-rose-300/90">
-                  {gpuUnavailable
-                    ? 'GPU telemetry unavailable - cannot verify VRAM, so rendering is disabled.'
-                    : `This model requires at least ${requiredVramMb} MB free VRAM, but only ${freeVramMb} MB is currently available. Previous weights or torch memory are still loaded.`}
+                <span className="font-bold block text-slate-100">Previous model still loaded</span>
+                <span className="text-[11px] text-slate-400">
+                  Only {freeVramMb} MB free of the {requiredVramMb} MB this model needs. The worker will unload it
+                  automatically before rendering - no action needed.
                 </span>
               </div>
             </div>
 
-            {vramCritical && onFreeVram && (
+            {onFreeVram && (
               <button
                 type="button"
                 onClick={onFreeVram}
                 disabled={isFreeingVram}
-                className="px-4 py-2 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white font-extrabold rounded-xl text-xs shrink-0 flex items-center justify-center space-x-2 transition-all shadow-lg active:scale-95 disabled:opacity-50 ring-2 ring-rose-400/30 tracking-wide"
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold rounded-xl text-xs shrink-0 flex items-center justify-center space-x-2 transition-all active:scale-95 disabled:opacity-50"
               >
                 <Trash2 className={`w-4 h-4 ${isFreeingVram ? 'animate-spin' : ''}`} />
-                <span>{isFreeingVram ? 'FREEING VRAM...' : 'FREE VRAM NOW'}</span>
+                <span>{isFreeingVram ? 'FREEING...' : 'FREE NOW'}</span>
               </button>
             )}
           </div>
         )}
 
-        {referenceImageMissing && !gpuUnavailable && !vramCritical && (
+        {referenceImageMissing && !vramUnfixable && (
           <div className="flex items-center space-x-2 p-3 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-300 text-xs">
             <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
             <span>Quantized SVD is image-to-video - upload a reference image above before rendering.</span>
@@ -494,13 +531,13 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
               <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
               <span>GPU Execution In Progress...</span>
             </>
-          ) : gpuUnavailable ? (
-            <span>GPU Telemetry Unavailable</span>
-          ) : vramCritical ? (
+          ) : vramUnfixable ? (
             <div className="flex items-center space-x-2">
               <ShieldAlert className="w-4 h-4 text-rose-400" />
-              <span>Insufficient VRAM ({freeVramMb} MB Free / {requiredVramMb} MB Needed) — Clear VRAM Above</span>
+              <span>Model Too Large for This GPU</span>
             </div>
+          ) : willQueueForLater ? (
+            <span>Queue Render — Starts When Your PC Is Back</span>
           ) : isUploading ? (
             <span>Uploading Reference Image...</span>
           ) : referenceImageMissing ? (

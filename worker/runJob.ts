@@ -2,12 +2,26 @@ import WebSocket from 'ws';
 import crypto from 'crypto';
 import { put } from '@vercel/blob';
 import { buildComfyUiWorkflow } from '../src/gateway/workflowMapper.js';
-import { getSystemStatsInternal, readGpuVram, runPreflightCheck } from '../src/gateway/vramMonitor.js';
+import { getSystemStatsInternal, readGpuVram, noteVramPurged, runPreflightCheck } from '../src/gateway/vramMonitor.js';
 import { MediaType } from '../src/gateway/types.js';
 import * as cloud from './gatewayClient.js';
 import type { ClaimedJob, JobPhase, ProgressPatch } from './gatewayClient.js';
 
-const EXECUTION_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Timeouts are measured from the last sign of life, NOT from job start.
+ *
+ * A fixed wall-clock budget kills renders that are working perfectly: SDXL on this 8 GB card
+ * was traced at 497s end-to-end, of which the sampler spent ~360s loading weights before its
+ * first step - so a 5-minute budget failed it outright and 10 minutes was marginal. Meanwhile
+ * a genuinely hung ComfyUI is not distinguishable by total runtime at all, only by silence.
+ *
+ * The largest gap between messages observed during that healthy-but-slow stretch was ~185s, so
+ * a 6-minute silence window leaves generous headroom over real behaviour while still catching a
+ * wedged process. ABSOLUTE_TIMEOUT_MS is only a backstop against a job that keeps chattering
+ * forever without ever finishing.
+ */
+const INACTIVITY_TIMEOUT_MS = 6 * 60 * 1000;
+const ABSOLUTE_TIMEOUT_MS = 45 * 60 * 1000;
 
 // Cadence of the progress ticker. Faster than the dashboard's own ~1.2s poll would be wasted
 // writes; much slower and the "elapsed" readout visibly stutters. 2s also bounds how long an
@@ -136,12 +150,45 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
 
   // Authoritative live check right before dispatch - api/jobs/index.ts already did a
   // best-effort pass using the last heartbeat, which can be a few seconds stale.
-  const stats = await getSystemStatsInternal(comfyUrl);
-  const preflight = runPreflightCheck(stats.vramFreeMb, job.modelType as MediaType);
+  let stats = await getSystemStatsInternal(comfyUrl);
+  let preflight = runPreflightCheck(stats.vramFreeMb, job.modelType as MediaType);
+
+  if (!preflight.passed) {
+    // ComfyUI keeps the previous render's model resident, so a second generation routinely
+    // arrived with only ~2.4 GB free against a 3800 MB (Flux) or 5200 MB (SDXL) requirement
+    // and was rejected outright. That made back-to-back generation impossible without manually
+    // purging VRAM between every job. The held memory is reclaimable by definition here, so
+    // reclaim it and re-check rather than failing on a condition the worker can resolve itself.
+    console.log(
+      `[worker] Preflight short by ${preflight.requiredFreeMb - stats.vramFreeMb} MB - reclaiming ComfyUI VRAM and retrying.`
+    );
+    const cleanForFree = comfyUrl.replace(/\/$/, '');
+    try {
+      await fetch(`${cleanForFree}/free`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unload_models: true, free_memory: true }),
+      });
+      // CUDA hands memory back asynchronously; poll rather than guess a single sleep length.
+      for (let attempt = 0; attempt < 8; attempt++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        stats = await getSystemStatsInternal(comfyUrl);
+        preflight = runPreflightCheck(stats.vramFreeMb, job.modelType as MediaType);
+        if (preflight.passed) break;
+      }
+      if (preflight.passed) {
+        noteVramPurged(stats.vramUsedMb);
+        console.log(`[worker] Reclaim succeeded - ${stats.vramFreeMb} MB free, proceeding.`);
+      }
+    } catch (err) {
+      console.error('[worker] VRAM reclaim before preflight failed:', err);
+    }
+  }
+
   if (!preflight.passed) {
     await cloud.postFail(
       job.id,
-      `OOM Pre-flight Guardrail: this model needs ${preflight.requiredFreeMb} MB free VRAM, only ${stats.vramFreeMb} MB is available.`
+      `OOM Pre-flight Guardrail: this model needs ${preflight.requiredFreeMb} MB free VRAM, and only ${stats.vramFreeMb} MB is available even after unloading ComfyUI's models - another process is holding GPU memory.`
     );
     return;
   }
@@ -212,6 +259,7 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
     let sampleStep: number | null = null;
     let sampleMax: number | null = null;
     let etaSeconds: number | undefined;
+    let promptId: string | null = null;
 
     const handleInterrupt = () => {
       finalize(async () => {
@@ -297,6 +345,7 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutHandle);
+      clearTimeout(absoluteHandle);
       clearInterval(ticker);
       Promise.resolve()
         .then(fn)
@@ -312,9 +361,9 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
       return;
     }
 
-    const timeoutHandle = setTimeout(() => {
+    const abortRender = (reason: string) => {
       finalize(async () => {
-        await cloud.postFail(job.id, `GPU execution timed out after 10 minutes with no 'executed' event from ComfyUI.`);
+        await cloud.postFail(job.id, reason);
         try {
           ws.close();
         } catch {}
@@ -325,7 +374,28 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
           body: JSON.stringify({ unload_models: true, free_memory: true }),
         }).catch(() => {});
       });
-    }, EXECUTION_TIMEOUT_MS);
+    };
+
+    // Rearmed by every ComfyUI message for this prompt (see touchActivity), so the clock only
+    // runs while ComfyUI is silent.
+    let timeoutHandle = setTimeout(
+      () => abortRender(`ComfyUI went silent for ${INACTIVITY_TIMEOUT_MS / 60000} minutes mid-render - treating it as hung.`),
+      INACTIVITY_TIMEOUT_MS
+    );
+
+    const absoluteHandle = setTimeout(
+      () => abortRender(`GPU execution exceeded the ${ABSOLUTE_TIMEOUT_MS / 60000}-minute hard ceiling.`),
+      ABSOLUTE_TIMEOUT_MS
+    );
+
+    const touchActivity = () => {
+      if (settled) return;
+      clearTimeout(timeoutHandle);
+      timeoutHandle = setTimeout(
+        () => abortRender(`ComfyUI went silent for ${INACTIVITY_TIMEOUT_MS / 60000} minutes mid-render - treating it as hung.`),
+        INACTIVITY_TIMEOUT_MS
+      );
+    };
 
     ws.on('open', async () => {
       try {
@@ -334,6 +404,11 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt: workflow, client_id: clientId }),
         });
+        if (res.ok) {
+          // Retained so /history can be consulted for this exact prompt later - previously the
+          // response body was discarded, leaving the WS payload as the only route to the result.
+          promptId = (await res.clone().json().catch(() => null))?.prompt_id ?? null;
+        }
         if (!res.ok) {
           const errText = await res.text();
           throw new Error(`ComfyUI returned HTTP ${res.status}: ${errText}`);
@@ -350,6 +425,11 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
       if (settled) return;
       try {
         const msg = JSON.parse(data.toString());
+
+        // Any message at all counts as ComfyUI being alive - including progress_state, which
+        // 0.33.x emits steadily and which this handler otherwise ignores. That matters: during
+        // the sampler's long pre-step load, progress_state was often the ONLY traffic.
+        touchActivity();
 
         // The WS handlers below only update local state - they never post. The ticker is the
         // single publisher, which keeps the reported row consistent (one writer, one shape)
@@ -382,23 +462,26 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
             const msPerStep = (Date.now() - samplingStartTime) / value;
             etaSeconds = Math.max(0, Math.round((msPerStep * (max - value)) / 1000));
           }
-        } else if (msg.type === 'executed') {
-          const output = msg.data.output;
-          let filename = '';
-          let subfolder = '';
-          let type = 'output';
-
-          if (output?.images?.length) {
-            filename = output.images[0].filename;
-            subfolder = output.images[0].subfolder || '';
-            type = output.images[0].type || 'output';
-          } else if (output?.animated?.length) {
-            filename = output.animated[0].filename;
-            subfolder = output.animated[0].subfolder || '';
-          } else if (output?.gifs?.length) {
-            filename = output.gifs[0].filename;
-            subfolder = output.gifs[0].subfolder || '';
+        } else if (msg.type === 'executed' || msg.type === 'execution_success') {
+          // `executed` carries the outputs inline; `execution_success` (0.33.x) only says the
+          // prompt finished. Falling back to /history for the latter means the run is
+          // recoverable even if the inline payload is missed or its shape changes again -
+          // /history is ComfyUI's own durable record of what a prompt produced.
+          let output = msg.data?.output;
+          if (!output && promptId) {
+            try {
+              const hist: any = await (await fetch(`${cleanUrl}/history/${promptId}`)).json();
+              const outputs = hist?.[promptId]?.outputs ?? {};
+              output = Object.values(outputs).find((o: any) => o?.images?.length || o?.gifs?.length || o?.animated?.length);
+            } catch {
+              // Leave output undefined - handled as "nothing produced" below.
+            }
           }
+
+          const media = output?.images?.[0] ?? output?.animated?.[0] ?? output?.gifs?.[0];
+          const filename: string = media?.filename ?? '';
+          const subfolder: string = media?.subfolder ?? '';
+          const type: string = media?.type ?? 'output';
 
           if (filename) {
             // Blob upload happens inside finalize, which stops the ticker - so publish the
