@@ -3,6 +3,7 @@ import { upload } from '@vercel/blob/client';
 import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2, Trash2 } from 'lucide-react';
 import { MediaType, AspectRatio, WorkflowParams, SystemStats, DurationStat } from '../types';
 import { hasReclaimableVram, isRenderInFlight, reclaimTooltip } from '../lib/vramReclaim';
+import { PromptMaker } from './PromptMaker';
 
 /** Read intrinsic pixel dimensions client-side - there's no server-side sharp step anymore
  *  now that uploads go straight from the browser to Blob storage (see handleFileSelect). */
@@ -318,6 +319,9 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
 
           </div>
         </div>
+
+        {/* Sits directly above the prompt field it writes into, so the connection is obvious. */}
+        <PromptMaker mediaType={mediaType} aspectRatio={aspectRatio} onUsePrompt={setPrompt} />
 
         {/* Prompt Input Area */}
         <div>

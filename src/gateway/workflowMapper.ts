@@ -1,4 +1,4 @@
-import { WorkflowParams } from './types';
+﻿import { WorkflowParams } from './types';
 
 export interface ComfyUIWorkflowPrompt {
   [nodeId: string]: {
@@ -88,118 +88,66 @@ export function buildComfyUiWorkflow(params: WorkflowParams): Record<string, any
     "2": { "inputs": { "text": params.prompt, "clip": ["1", 1] }, "class_type": "CLIPTextEncode" },
   };
 
-  if (params.referenceImage && !isFlux) {
-    // Full face-identity regeneration (SDXL only - no Flux FaceID model is installed).
-    // Unlike the pixel-composite scene swap below, this actually RE-POSES and RE-LIGHTS
-    // the subject into the new scene: IPAdapter FaceID extracts a face embedding via
-    // InsightFace (identity) plus a CLIP vision embedding of the aligned face crop, and
-    // injects both into the UNet's cross-attention alongside its paired LoRA - the whole
-    // image is genuinely regenerated, not stitched, so the result can show a different
-    // pose/angle/lighting while keeping the person recognizable.
-    workflow["3"] = { "inputs": { "text": baseNegative, "clip": ["1", 1] }, "class_type": "CLIPTextEncode" };
-    workflow["4"] = { "inputs": { "image": params.referenceImage }, "class_type": "LoadImage" };
-    workflow["5"] = { "inputs": { "ipadapter_file": "ip-adapter-faceid_sdxl.bin" }, "class_type": "IPAdapterModelLoader" };
-    workflow["6"] = { "inputs": { "provider": "CPU", "model_name": "buffalo_l" }, "class_type": "IPAdapterInsightFaceLoader" };
-    workflow["7"] = { "inputs": { "clip_name": "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors" }, "class_type": "CLIPVisionLoader" };
-    workflow["8"] = {
-      "inputs": { "model": ["1", 0], "lora_name": "ip-adapter-faceid_sdxl_lora.safetensors", "strength_model": 0.6 },
-      "class_type": "LoraLoaderModelOnly",
-    };
-    workflow["9"] = {
-      "inputs": {
-        "model": ["8", 0],
-        "ipadapter": ["5", 0],
-        "image": ["4", 0],
-        "clip_vision": ["7", 0],
-        "insightface": ["6", 0],
-        "weight": 1.0,
-        "weight_faceidv2": 1.0,
-        "weight_type": "linear",
-        "combine_embeds": "concat",
-        "start_at": 0.0,
-        "end_at": 1.0,
-        "embeds_scaling": "V only",
-      },
-      "class_type": "IPAdapterFaceID",
-    };
-    workflow["10"] = { "inputs": { "width": width, "height": height, "batch_size": 1 }, "class_type": "EmptyLatentImage" };
-    workflow["11"] = {
-      "inputs": {
-        "seed": seed,
-        "steps": steps,
-        "cfg": cfg,
-        "sampler_name": "dpmpp_2m",
-        "scheduler": "karras",
-        "denoise": 1.0,
-        "model": ["9", 0],
-        "positive": ["2", 0],
-        "negative": ["3", 0],
-        "latent_image": ["10", 0],
-      },
-      "class_type": "KSampler",
-    };
-    workflow["12"] = { "inputs": { "samples": ["11", 0], "vae": ["1", 2] }, "class_type": "VAEDecode" };
-    workflow["13"] = { "inputs": { "filename_prefix": "sdxl_faceid", "images": ["12", 0] }, "class_type": "SaveImage" };
-    return workflow;
-  }
-
   if (params.referenceImage) {
-    // Flux fallback - face-preserving scene swap via pixel composite (see the SDXL FaceID
-    // branch above for the primary, better path; Flux has no FaceID adapter available).
-    // Plain img2img re-diffuses the ENTIRE photo (faces included) at whatever denoise is
-    // dialed in, which is why a moderate-to-high denoise (needed to actually change the
-    // scene) also warps faces - there is no denoise value that reliably changes the
-    // background while leaving people untouched, because img2img has no concept of
-    // "people" at all. Instead: segment the people out with a real foreground mask (rembg,
-    // via the RembgForegroundMask custom node), generate a brand new background from
-    // scratch (full denoise, unconstrained by the old composition), and composite the
-    // ORIGINAL unmodified photo pixels back on top using that mask. Faces are never
-    // re-diffused - they're pasted back byte-for-byte.
+    /**
+     * True img2img: encode the reference into latent space and re-diffuse it at partial
+     * denoise. Core nodes only - no custom nodes, no extra model files.
+     *
+     * This replaces two earlier reference-image paths that were both unusable in practice:
+     *
+     * 1. A "scene swap" for Flux that ran RembgForegroundMask to cut the subject out, generated
+     *    a new background, then composited the ORIGINAL pixels back on top. It therefore could
+     *    not change the subject at all - the opposite of what a request like "make the man look
+     *    like a cat superhero" needs - and rembg is CPU-bound: measured at ~100% of one core,
+     *    still running 29 minutes into a single render, holding 7945 of 8192 MiB of VRAM. That
+     *    single node caused the stuck renders, the VRAM exhaustion, and the purge that could not
+     *    free anything (weights in active use are not reclaimable).
+     * 2. An IPAdapter FaceID graph for SDXL requiring ip-adapter-faceid_sdxl.bin, a buffalo_l
+     *    InsightFace pack and CLIP-ViT-bigG - none of which are installed, so it could only ever
+     *    have failed validation.
+     *
+     * Denoise is the one dial that matters here: low values stay close to the photo, high values
+     * reinterpret it freely. 0.65 is a deliberate middle - enough to genuinely transform the
+     * subject while keeping the original composition and pose recognisable.
+     */
     const [rw, rh] = roundToMultipleOf8(
       params.referenceImageWidth || width,
       params.referenceImageHeight || height
     );
+    const denoise = params.denoise ?? 0.65;
 
-    workflow["3"] = {
-      "inputs": { "text": `${baseNegative}, people, humans, person, extra faces, duplicate figures`, "clip": ["1", 1] },
-      "class_type": "CLIPTextEncode",
-    };
-    // Normalizes the source photo to the exact dims the generated background will use -
-    // center-crop (not stretch) so faces are never distorted, only trimmed by at most a few
-    // pixels at the edges to reach a multiple of 8 (required for the latent/VAE pipeline).
+    workflow["3"] = { "inputs": { "text": baseNegative, "clip": ["1", 1] }, "class_type": "CLIPTextEncode" };
     workflow["4"] = { "inputs": { "image": params.referenceImage }, "class_type": "LoadImage" };
-    workflow["4b"] = {
+    // Centre-crop rather than stretch, so faces are never distorted - only trimmed slightly to
+    // reach the multiple of 8 the latent pipeline requires.
+    workflow["5"] = {
       "inputs": { "image": ["4", 0], "upscale_method": "lanczos", "width": rw, "height": rh, "crop": "center" },
       "class_type": "ImageScale",
     };
-    workflow["4c"] = { "inputs": { "image": ["4b", 0] }, "class_type": "RembgForegroundMask" };
-    workflow["5"] = { "inputs": { "width": rw, "height": rh, "batch_size": 1 }, "class_type": "EmptyLatentImage" };
-    workflow["6"] = {
+    workflow["6"] = { "inputs": { "pixels": ["5", 0], "vae": ["1", 2] }, "class_type": "VAEEncode" };
+    workflow["7"] = {
       "inputs": {
         "seed": seed,
         "steps": steps,
         "cfg": cfg,
         "sampler_name": isFlux ? "euler_ancestral" : "dpmpp_2m",
         "scheduler": isFlux ? "simple" : "karras",
-        "denoise": 1.0,
+        "denoise": denoise,
         "model": ["1", 0],
         "positive": ["2", 0],
         "negative": ["3", 0],
-        "latent_image": ["5", 0],
+        "latent_image": ["6", 0],
       },
       "class_type": "KSampler",
     };
-    workflow["7"] = { "inputs": { "samples": ["6", 0], "vae": ["1", 2] }, "class_type": "VAEDecode" };
-    workflow["8"] = {
-      "inputs": { "destination": ["7", 0], "source": ["4b", 0], "x": 0, "y": 0, "resize_source": false, "mask": ["4c", 0] },
-      "class_type": "ImageCompositeMasked",
-    };
+    workflow["8"] = { "inputs": { "samples": ["7", 0], "vae": ["1", 2] }, "class_type": "VAEDecode" };
     workflow["9"] = {
-      "inputs": { "filename_prefix": isFlux ? "flux_fast_sceneswap" : "sdxl_hd_sceneswap", "images": ["8", 0] },
+      "inputs": { "filename_prefix": isFlux ? "flux_img2img" : "sdxl_img2img", "images": ["8", 0] },
       "class_type": "SaveImage",
     };
     return workflow;
   }
+
 
   workflow["3"] = { "inputs": { "text": baseNegative, "clip": ["1", 1] }, "class_type": "CLIPTextEncode" };
   workflow["4"] = { "inputs": { "width": width, "height": height, "batch_size": 1 }, "class_type": "EmptyLatentImage" };

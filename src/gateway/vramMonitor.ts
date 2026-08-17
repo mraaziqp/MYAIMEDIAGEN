@@ -76,12 +76,26 @@ function recordFloor(usedMb: number): void {
 }
 
 /** Memory ComfyUI is holding above the idle floor, or undefined while the floor is unproven. */
-export function estimateReclaimableMb(currentUsedMb: number, torchReservedMb?: number): number | undefined {
+export function estimateReclaimableMb(
+  currentUsedMb: number,
+  torchReservedMb?: number,
+  vramTotalMb?: number
+): number | undefined {
   if (observedFloorMb === null || floorSampleCount < SAMPLES_BEFORE_TRUSTED) return undefined;
   const aboveFloor = Math.max(0, currentUsedMb - observedFloorMb);
-  // Take whichever signal claims more. Either one reading high is evidence there is something
-  // to free; requiring both to agree would reintroduce the false negative this replaced.
-  return Math.max(aboveFloor, torchReservedMb ?? 0);
+
+  // torch_vram_total is only usable when it is physically plausible. Under the cudaMallocAsync
+  // allocator it can report a figure far larger than the card holds - observed 13.5 GB on an
+  // 8 GB card, which the dashboard then advertised as "RECLAIM 13.5 GB". Discard any reading
+  // that exceeds total VRAM rather than trusting it.
+  const plausibleTorch =
+    torchReservedMb != null && (vramTotalMb == null || torchReservedMb <= vramTotalMb) ? torchReservedMb : 0;
+
+  // Take whichever surviving signal claims more. Either one reading high is evidence there is
+  // something to free; requiring both to agree would reintroduce the false negative this
+  // replaced. Then cap at what is actually in use - nothing can free more than that.
+  const estimate = Math.max(aboveFloor, plausibleTorch);
+  return Math.min(estimate, currentUsedMb);
 }
 
 async function readGpu(): Promise<GpuReading> {
@@ -236,7 +250,9 @@ export async function getSystemStatsInternal(comfyUrl: string = 'http://127.0.0.
     systemRamFreeMb,
     // Only meaningful when ComfyUI is actually up - it is the only process whose memory this
     // app can release, so attributing headroom to it while it is down would be a false offer.
-    reclaimableVramMb: comfyOnline ? estimateReclaimableMb(gpu.vramUsedMb, comfy.torchVramReservedMb) : undefined,
+    reclaimableVramMb: comfyOnline
+      ? estimateReclaimableMb(gpu.vramUsedMb, comfy.torchVramReservedMb, gpu.vramTotalMb)
+      : undefined,
     preflightCheck: {
       passed: preflight.passed,
       recommendedMediaType: preflight.recommendedMediaType,

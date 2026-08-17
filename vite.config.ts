@@ -40,10 +40,26 @@ export default defineConfig(() => {
           // That is how stale UI survived several deploys. Letting the document always come
           // from the network means a reload can never resolve to a superseded bundle.
           globPatterns: ['**/*.{js,css,ico,png,svg,webmanifest}'],
-          // No offline document fallback, for the same reason: a cached shell would reintroduce
-          // the pinning. This is a cloud dashboard - it cannot do anything useful offline
-          // anyway, since telemetry, the job queue and the gallery all require the network.
+          // No PRECACHED document (that is what pinned the hashes), but navigations are still
+          // handled - by the NetworkFirst route below. Both properties matter: an installable
+          // PWA needs a service worker that handles navigation requests, so simply dropping the
+          // document entirely traded stale bundles for a non-installable app.
           navigateFallback: null,
+          runtimeCaching: [
+            {
+              // NetworkFirst, not StaleWhileRevalidate: the freshest index.html always wins when
+              // the network is reachable, so a reload can never resolve to a superseded bundle.
+              // The cached copy is only a fallback for genuinely being offline, which is what
+              // keeps the app installable and launchable from the home screen.
+              urlPattern: ({ request }) => request.mode === 'navigate',
+              handler: 'NetworkFirst',
+              options: {
+                cacheName: 'app-shell',
+                networkTimeoutSeconds: 5,
+                expiration: { maxEntries: 4 },
+              },
+            },
+          ],
           // Real-time API routes (VRAM telemetry, generation status) must never be cached.
           navigateFallbackDenylist: [/^\/api/],
           // Take over immediately on update instead of waiting for every open tab of the

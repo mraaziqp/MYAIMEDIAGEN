@@ -32,6 +32,7 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selectedRecord, setSelectedRecord] = useState<CloudJob | null>(null);
   const [shareStateById, setShareStateById] = useState<Record<string, 'sharing' | 'shared' | 'copied'>>({});
+  const [showFailed, setShowFailed] = useState(false);
 
   const handleShare = async (item: CloudJob) => {
     setShareStateById((s) => ({ ...s, [item.id]: 'sharing' }));
@@ -44,7 +45,15 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
     }
   };
 
+  // Failed renders are hidden by default. This is a gallery of your work, and a failure has no
+  // artwork to show - a wall of red cards pushed the actual results below the fold. They are
+  // still one click away rather than deleted, because the error text is how you find out why
+  // something did not render.
+  const failedCount = records.filter((r) => r.status === 'failed' || r.status === 'interrupted').length;
+
   const filteredRecords = records.filter((r) => {
+    const isFailure = r.status === 'failed' || r.status === 'interrupted';
+    if (isFailure && !showFailed) return false;
     const matchesType = filterType === 'all' || r.modelType === filterType;
     const matchesSearch =
       !searchQuery ||
@@ -104,7 +113,7 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
                 filterType === 'all' ? 'bg-cyan-950 text-cyan-300 border border-cyan-800' : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              All ({records.length})
+              All ({records.length - (showFailed ? 0 : failedCount)})
             </button>
             <button
               onClick={() => setFilterType('image_fast')}
@@ -131,6 +140,24 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({ records, onRefresh }
               SVD Video
             </button>
           </div>
+
+          {/* Only offered when there is something to reveal, so it is not permanent clutter. */}
+          {failedCount > 0 && (
+            <button
+              onClick={() => setShowFailed((s) => !s)}
+              title={showFailed ? 'Hide renders that failed' : 'Show renders that failed, with the reason'}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-medium border transition-all shrink-0 flex items-center space-x-1.5 ${
+                showFailed
+                  ? 'bg-rose-950/60 border-rose-800/70 text-rose-300'
+                  : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-slate-300'
+              }`}
+            >
+              <AlertOctagon className="w-3.5 h-3.5" />
+              <span>
+                {showFailed ? 'Hiding' : 'Show'} {failedCount} failed
+              </span>
+            </button>
+          )}
 
         </div>
 

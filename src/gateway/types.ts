@@ -17,6 +17,12 @@ export interface WorkflowParams {
   cfg?: number;
   samplerName?: string;
   negativePrompt?: string;
+  /**
+   * img2img strength for reference-image renders: how far the reference is re-diffused. Low
+   * stays close to the photo, high reinterprets it freely. Ignored for text-to-image, which
+   * always runs at full denoise. Defaults to 0.65 in workflowMapper.
+   */
+  denoise?: number;
   /** Filename of an image already uploaded to ComfyUI's input directory via /api/upload-image. */
   referenceImage?: string;
   /**
