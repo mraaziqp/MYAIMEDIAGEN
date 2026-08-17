@@ -147,6 +147,9 @@ function formatDuration(ms: number): string {
  */
 export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
   const startTime = Date.now();
+  // Declared up here because the preflight below needs it too - it was previously defined only
+  // after the workflow was built, which is later than the first code that has to talk to ComfyUI.
+  const cleanUrl = comfyUrl.replace(/\/$/, '');
 
   // Authoritative live check right before dispatch - api/jobs/index.ts already did a
   // best-effort pass using the last heartbeat, which can be a few seconds stale.
@@ -162,9 +165,8 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
     console.log(
       `[worker] Preflight short by ${preflight.requiredFreeMb - stats.vramFreeMb} MB - reclaiming ComfyUI VRAM and retrying.`
     );
-    const cleanForFree = comfyUrl.replace(/\/$/, '');
     try {
-      await fetch(`${cleanForFree}/free`, {
+      await fetch(`${cleanUrl}/free`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ unload_models: true, free_memory: true }),
@@ -186,9 +188,30 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
   }
 
   if (!preflight.passed) {
+    // "Another process is holding GPU memory" was misleading in the most common case: usually
+    // it is ComfyUI itself, still executing an abandoned render that /free cannot touch because
+    // its weights are in active use. Observed a scene-swap prompt 29 minutes in, pinning 7.9 of
+    // 8 GB, while every new job failed with a message pointing at the wrong culprit. Naming the
+    // real blocker turns an unactionable error into a clear instruction.
+    let blocker = 'another process is holding GPU memory';
+    try {
+      const queue: any = await (await fetch(`${cleanUrl}/queue`)).json();
+      const running = (queue?.queue_running ?? [])[0];
+      if (running) {
+        const startedMs = Number(running?.[3]?.create_time);
+        const forMin = Number.isFinite(startedMs) ? Math.round((Date.now() - startedMs) / 60000) : null;
+        blocker =
+          `ComfyUI is still executing an earlier render (prompt ${running?.[1] ?? 'unknown'}` +
+          `${forMin !== null ? `, ${forMin} min so far` : ''}) and its weights cannot be unloaded while in use. ` +
+          `If it is stuck, restart ComfyUI to release the GPU.`;
+      }
+    } catch {
+      // Fall back to the generic wording if ComfyUI cannot be queried.
+    }
+
     await cloud.postFail(
       job.id,
-      `OOM Pre-flight Guardrail: this model needs ${preflight.requiredFreeMb} MB free VRAM, and only ${stats.vramFreeMb} MB is available even after unloading ComfyUI's models - another process is holding GPU memory.`
+      `OOM Pre-flight Guardrail: this model needs ${preflight.requiredFreeMb} MB free VRAM but only ${stats.vramFreeMb} MB is available even after unloading ComfyUI's models - ${blocker}`
     );
     return;
   }
@@ -216,8 +239,6 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
     referenceImageWidth: job.referenceImageWidth ?? undefined,
     referenceImageHeight: job.referenceImageHeight ?? undefined,
   });
-
-  const cleanUrl = comfyUrl.replace(/\/$/, '');
 
   // Node "1" is the checkpoint/model loader in every workflow workflowMapper builds.
   const requiredCkpt = (workflow['1'] as any)?.inputs?.ckpt_name;

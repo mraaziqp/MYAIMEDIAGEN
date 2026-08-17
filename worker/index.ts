@@ -21,6 +21,82 @@ function sleep(ms: number): Promise<void> {
 let isJobRunning = false;
 
 /**
+ * Cancels anything this app left running inside ComfyUI from a PREVIOUS worker process.
+ *
+ * A worker that restarts (crash, supervisor bounce, reboot) forgets every prompt it had
+ * dispatched, but ComfyUI keeps executing them - nothing collects the result and nothing stops
+ * them. Observed exactly that: a prompt from client_id worker_b560a5a7 still running long after
+ * that process was gone, holding 7945 of 8192 MiB so every subsequent job failed its preflight
+ * with "only 269 MB available even after unloading ComfyUI's models". It also desynchronises the
+ * cloud's job table from reality, which is what let a VRAM purge through while the GPU was busy.
+ *
+ * Scoped to prompts whose client_id starts with `worker_` - the ids this app generates - so a
+ * workflow the user is running by hand in the ComfyUI UI is never touched. Safe at startup by
+ * definition: this process has dispatched nothing yet, so any such prompt must be orphaned.
+ */
+async function cancelOrphanedComfyPrompts(comfyUrl: string): Promise<void> {
+  const cleanUrl = comfyUrl.replace(/\/$/, '');
+  try {
+    const queue: any = await (await fetch(`${cleanUrl}/queue`)).json();
+    const isOurs = (entry: any) => String(entry?.[3]?.client_id ?? '').startsWith('worker_');
+
+    const running = (queue?.queue_running ?? []).filter(isOurs);
+    const pending = (queue?.queue_pending ?? []).filter(isOurs);
+    if (running.length === 0 && pending.length === 0) return;
+
+    console.log(
+      `[worker] Found ${running.length} running and ${pending.length} pending orphaned prompt(s) in ComfyUI from a previous worker - cancelling.`
+    );
+
+    // Pending ones are removed by id; the running one can only be stopped with /interrupt.
+    const pendingIds = pending.map((e: any) => e?.[1]).filter(Boolean);
+    if (pendingIds.length) {
+      await fetch(`${cleanUrl}/queue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ delete: pendingIds }),
+      }).catch(() => {});
+    }
+    if (running.length) {
+      await fetch(`${cleanUrl}/interrupt`, { method: 'POST' }).catch(() => {});
+    }
+
+    // Reclaim whatever the abandoned render was holding, so the next job starts with a clean GPU.
+    await fetch(`${cleanUrl}/free`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unload_models: true, free_memory: true }),
+    }).catch(() => {});
+    await sleep(2500);
+
+    // Verify rather than assume. /interrupt is best-effort: ComfyUI can only honour it at points
+    // the executing node checks for it, and a CPU-bound custom node (RembgForegroundMask in the
+    // scene-swap graph, measured still running 29 minutes in) never yields. Saying "cleanup done"
+    // when the GPU is still pinned would hide the one fact the user needs.
+    try {
+      const stillRunning = await fetch(`${cleanUrl}/queue`)
+        .then((r) => r.json())
+        .then((q: any) => (q?.queue_running ?? []).length > 0)
+        .catch(() => false);
+      const after = await readGpuVram();
+      if (stillRunning) {
+        console.warn(
+          `[worker] ComfyUI did not stop the orphaned render - it is CPU-bound and ignores /interrupt. ` +
+            `Only ${after.vramFreeMb} MB VRAM free, so renders will fail their preflight until it finishes or ComfyUI is restarted.`
+        );
+      } else {
+        noteVramPurged(after.vramUsedMb);
+        console.log(`[worker] Orphan cleanup done - ${after.vramFreeMb} MB VRAM free.`);
+      }
+    } catch {
+      /* telemetry is best-effort here */
+    }
+  } catch (err) {
+    console.error('[worker] Could not reconcile ComfyUI queue at startup:', err);
+  }
+}
+
+/**
  * Sends /free and /interrupt to ComfyUI to unload models and purge PyTorch CUDA cache allocator pool,
  * then IMMEDIATELY reads fresh GPU hardware stats and syncs them to the cloud.
  */
@@ -200,7 +276,11 @@ async function supervise(name: string, loop: () => Promise<void>): Promise<void>
   }
 }
 
-void Promise.all([supervise('jobLoop', jobLoop), supervise('heartbeatLoop', heartbeatLoop)]);
+// Reconcile ComfyUI before claiming anything, so a leftover render from a previous process
+// cannot hold the GPU hostage against every job this one picks up.
+void cancelOrphanedComfyPrompts(COMFY_URL).finally(() => {
+  void Promise.all([supervise('jobLoop', jobLoop), supervise('heartbeatLoop', heartbeatLoop)]);
+});
 
 process.on('SIGINT', () => {
   shuttingDown = true;

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, ShieldCheck, Radio, Sparkles, Terminal, Database, Sliders, Layers, Trash2 } from 'lucide-react';
+import { Cpu, ShieldCheck, Radio, Sparkles, Terminal, Database, Sliders, Layers, Trash2, Loader2 } from 'lucide-react';
 import { SystemStats } from '../types';
 import { hasReclaimableVram, reclaimTooltip } from '../lib/vramReclaim';
 
@@ -25,6 +25,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const freeVramGb = systemStats && isOnline ? (systemStats.vramFreeMb / 1024).toFixed(1) : null;
   const isLowVram = systemStats && isOnline ? systemStats.vramFreeMb < 3800 : false;
   const hasReclaimable = isOnline && hasReclaimableVram(systemStats);
+  const activeJob = systemStats?.activeJob ?? null;
 
   return (
     <header className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 text-slate-100 shadow-md">
@@ -122,6 +123,28 @@ export const Navbar: React.FC<NavbarProps> = ({
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
               <span>AES-256</span>
             </div>
+
+            {/* Render-in-progress badge. Server-derived, so it appears on every device rather
+                than only in the tab that happened to submit the job - which is what made a
+                phone look idle mid-render, and what made it possible to click a destructive
+                action from a second device without knowing the GPU was busy. */}
+            {activeJob && (
+              <div
+                className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-cyan-950/70 border border-cyan-700/70 text-cyan-200 text-xs font-semibold shadow-sm"
+                title={`${activeJob.modelType} rendering${
+                  activeJob.phase ? ` (${activeJob.phase})` : ''
+                }${activeJob.queuedBehind > 0 ? ` - ${activeJob.queuedBehind} queued behind` : ''}`}
+              >
+                <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+                <span className="hidden sm:inline">Rendering {activeJob.percentage}%</span>
+                <span className="sm:hidden">{activeJob.percentage}%</span>
+                {activeJob.queuedBehind > 0 && (
+                  <span className="px-1.5 py-0.5 rounded bg-cyan-900/80 border border-cyan-700/60 text-[10px]">
+                    +{activeJob.queuedBehind}
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* ComfyUI Connection Badge */}
             <button

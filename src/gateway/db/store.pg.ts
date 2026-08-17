@@ -157,6 +157,53 @@ export async function queryJobs(query: string, limit = 50): Promise<Job[]> {
  */
 const ORPHAN_RECLAIM_AFTER = '60 minutes';
 
+export interface ActiveJobSummary {
+  id: string;
+  modelType: string;
+  status: string;
+  phase: string | null;
+  percentage: number;
+  etaSeconds: number | null;
+  elapsedMs: number | null;
+  queuedBehind: number;
+}
+
+/**
+ * The single in-flight render, plus how many are waiting behind it.
+ *
+ * "A render is running" previously existed only as activePromptId in one browser's
+ * localStorage, so it was invisible from any other device - open the dashboard on a phone
+ * mid-render and it looked idle. Since the worker processes strictly one job at a time, this is
+ * authoritative for the whole system rather than per-client, which is what makes it safe to gate
+ * destructive actions (like a VRAM purge) on.
+ */
+export async function getActiveJob(): Promise<ActiveJobSummary | null> {
+  await ensureSchema();
+  const [row] = await db
+    .select()
+    .from(jobs)
+    .where(sql`${jobs.status} IN ('claimed', 'processing')`)
+    .orderBy(desc(jobs.claimedAt))
+    .limit(1);
+  if (!row) return null;
+
+  const [pending] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(jobs)
+    .where(eq(jobs.status, 'queued'));
+
+  return {
+    id: row.id,
+    modelType: row.modelType,
+    status: row.status,
+    phase: row.phase,
+    percentage: row.percentage,
+    etaSeconds: row.etaSeconds,
+    elapsedMs: row.elapsedMs,
+    queuedBehind: pending?.count ?? 0,
+  };
+}
+
 export async function requeueOrphanedJobs(): Promise<number> {
   await ensureSchema();
   const released = await db

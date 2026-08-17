@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { upload } from '@vercel/blob/client';
 import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2, Trash2 } from 'lucide-react';
 import { MediaType, AspectRatio, WorkflowParams, SystemStats, DurationStat } from '../types';
-import { hasReclaimableVram, reclaimTooltip } from '../lib/vramReclaim';
+import { hasReclaimableVram, isRenderInFlight, reclaimTooltip } from '../lib/vramReclaim';
 
 /** Read intrinsic pixel dimensions client-side - there's no server-side sharp step anymore
  *  now that uploads go straight from the browser to Blob storage (see handleFileSelect). */
@@ -171,6 +171,7 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
   // contradicted the queued-state message the UI already shows ("this will start as soon as
   // the worker is running"). The button below just changes wording instead.
   const willQueueForLater = gpuUnavailable;
+  const renderInFlight = isRenderInFlight(stats);
 
   // Low free VRAM is no longer a hard block either: the worker unloads ComfyUI's resident
   // model and re-checks before giving up (see runJob's preflight), so back-to-back renders
@@ -471,6 +472,30 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
           </div>
         )}
 
+        {/* Renders never overlap - the worker processes strictly one job at a time and
+            claimNextJob takes a single row under FOR UPDATE SKIP LOCKED. So this is not a
+            warning that something will break; it explains the wait, which is the part that
+            previously just looked like nothing happening. */}
+        {renderInFlight && !vramUnfixable && (
+          <div className="flex items-start space-x-2.5 p-3.5 rounded-xl bg-cyan-950/40 border border-cyan-800/60 text-cyan-200 text-xs shadow-lg">
+            <Loader2 className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5 animate-spin" />
+            <div>
+              <span className="font-bold block text-cyan-100">
+                A render is already in progress ({stats?.activeJob?.percentage ?? 0}%)
+              </span>
+              <span className="text-[11px] text-cyan-300/90">
+                Your GPU handles one render at a time, so this one will queue and start
+                automatically when the current one finishes
+                {(stats?.activeJob?.queuedBehind ?? 0) > 0
+                  ? ` - there ${stats?.activeJob?.queuedBehind === 1 ? 'is' : 'are'} already ${
+                      stats?.activeJob?.queuedBehind
+                    } waiting.`
+                  : '.'}
+              </span>
+            </div>
+          </div>
+        )}
+
         {willQueueForLater && !vramUnfixable && (
           <div className="flex items-start space-x-2.5 p-3.5 rounded-xl bg-amber-950/40 border border-amber-800/60 text-amber-200 text-xs shadow-lg">
             <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
@@ -543,6 +568,8 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
             </div>
           ) : willQueueForLater ? (
             <span>Queue Render — Starts When Your PC Is Back</span>
+          ) : renderInFlight ? (
+            <span>Queue Render — Starts After the Current One</span>
           ) : isUploading ? (
             <span>Uploading Reference Image...</span>
           ) : referenceImageMissing ? (

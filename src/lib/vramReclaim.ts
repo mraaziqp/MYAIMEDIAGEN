@@ -22,8 +22,18 @@ export const RECLAIM_THRESHOLD_MB = 256;
  * NOT the same as zero, so the action stays available rather than being blocked on a missing
  * measurement.
  */
+/** True while a render is in flight system-wide (server-derived, so true on every device). */
+export function isRenderInFlight(stats: SystemStats | null): boolean {
+  return !!stats?.activeJob;
+}
+
 export function hasReclaimableVram(stats: SystemStats | null): boolean {
   if (!stats) return false;
+  // Purging mid-render unloads the very weights the GPU is using and destroys the generation.
+  // The worker refuses it locally and POST /api/free-vram refuses it cloud-side, so this is the
+  // third layer - but it is the one that matters to the user, because the other two can only
+  // reject a click that should never have been offered.
+  if (isRenderInFlight(stats)) return false;
   const mb = stats.reclaimableVramMb;
   return mb == null || mb >= RECLAIM_THRESHOLD_MB;
 }
@@ -31,12 +41,16 @@ export function hasReclaimableVram(stats: SystemStats | null): boolean {
 /** Names the real figure when known, so the button promises only what it can deliver. */
 export function reclaimButtonLabel(stats: SystemStats | null, isFreeing: boolean): string {
   if (isFreeing) return 'FREEING VRAM...';
+  if (isRenderInFlight(stats)) return 'RENDER IN PROGRESS';
   if (!hasReclaimableVram(stats)) return 'NOTHING TO RECLAIM';
   const mb = stats?.reclaimableVramMb;
   return mb == null ? 'FREE VRAM' : `RECLAIM ${(mb / 1024).toFixed(1)} GB`;
 }
 
 export function reclaimTooltip(stats: SystemStats | null): string {
+  if (isRenderInFlight(stats)) {
+    return 'A render is currently running - clearing VRAM now would unload the model it is using and kill the generation';
+  }
   return hasReclaimableVram(stats)
     ? 'Unload ComfyUI’s loaded models and purge its PyTorch CUDA cache, returning that VRAM to the GPU'
     : 'ComfyUI is not currently holding any releasable VRAM - there is nothing a purge could free';

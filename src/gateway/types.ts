@@ -148,6 +148,22 @@ export interface HardwareTelemetry {
   details?: string;
   /** VRAM currently held by ComfyUI PyTorch caching allocator that can be released */
   reclaimableVramMb?: number;
+  /**
+   * The one render currently in flight, system-wide, or null when idle. Server-derived rather
+   * than per-browser, so any device sees it - and so destructive actions can be refused while
+   * it runs instead of relying on the local tab happening to know.
+   */
+  activeJob?: {
+    id: string;
+    modelType: string;
+    status: string;
+    phase: JobPhase | null;
+    percentage: number;
+    etaSeconds: number | null;
+    elapsedMs: number | null;
+    /** Jobs waiting behind this one. */
+    queuedBehind: number;
+  } | null;
   /** ISO timestamp of the worker's last heartbeat - absent only if it has never reported in. */
   lastSeenAt?: string;
   preflightCheck: {

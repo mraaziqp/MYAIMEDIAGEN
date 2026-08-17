@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { rejectUnlessAuthed } from '../src/gateway/cloudAuth.js';
-import { getHeartbeatStatus } from '../src/gateway/db/store.pg.js';
+import { getHeartbeatStatus, getActiveJob } from '../src/gateway/db/store.pg.js';
 import { runPreflightCheck } from '../src/gateway/vramMonitor.js';
 
 /**
@@ -13,7 +13,10 @@ import { runPreflightCheck } from '../src/gateway/vramMonitor.js';
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (rejectUnlessAuthed(req, res)) return;
 
-  const { online, heartbeat } = await getHeartbeatStatus();
+  // Rides along on the telemetry poll the dashboard already makes every 2-6s, so every client
+  // - including one opened fresh on another device - can see that a render is in flight and
+  // gate destructive actions on it, without adding a second polling loop.
+  const [{ online, heartbeat }, activeJob] = await Promise.all([getHeartbeatStatus(), getActiveJob()]);
   if (!heartbeat) {
     return res.status(200).json({
       online: false,
@@ -32,6 +35,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       isTunnelConnected: false,
       error: 'Worker never reported in',
       details: 'No heartbeat has ever been received - start the local worker on your PC (see README).',
+      activeJob,
       preflightCheck: {
         passed: false,
         recommendedMediaType: [],
@@ -69,6 +73,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // only the local worker process can produce a heartbeat.
       details:
         'No heartbeat for over 30s. ComfyUI running is not enough - the local worker process is the only thing that reports in, so start it on your PC.',
+      activeJob,
       preflightCheck: {
         passed: false,
         recommendedMediaType: [],
@@ -101,6 +106,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     systemRamTotalMb,
     systemRamFreeMb: systemRamTotalMb - systemRamUsedMb,
     reclaimableVramMb: heartbeat.reclaimableVramMb ?? undefined,
+    activeJob,
     preflightCheck: {
       passed: preflight.passed,
       recommendedMediaType: preflight.recommendedMediaType,
