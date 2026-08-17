@@ -33,9 +33,10 @@ if errorlevel 1 (
   echo.
 )
 
-echo Starting worker - polling the cloud for jobs. Leave this window open.
+echo Starting worker under its supervisor - it will restart itself if it ever
+echo crashes, so telemetry stays online. Leave this window open.
 echo To stop, close this window or press Ctrl+C.
 echo.
-npx tsx worker/index.ts
+node worker/supervisor.mjs
 
 pause

@@ -11,6 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "worker": "tsx worker/index.ts",
+    "worker:supervised": "node worker/supervisor.mjs",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts"
   },
   "dependencies": {

@@ -171,10 +171,36 @@ console.log(`  Cloud API: ${process.env.CLOUD_API_URL || '(CLOUD_API_URL not set
 console.log(`  ComfyUI:   ${COMFY_URL}`);
 console.log('===============================================');
 
-Promise.all([jobLoop(), heartbeatLoop()]).catch((err) => {
-  console.error('[worker] Fatal error:', err);
-  process.exit(1);
+/**
+ * A crash anywhere outside the loops' own try/catch used to end the process, and nothing
+ * restarted it - which is exactly how the worker ended up dead for 15 hours while ComfyUI sat
+ * there running and the dashboard reported GPU telemetry offline. Neither of these conditions
+ * is worth dying for: the loops are independently recoverable, so log loudly and keep serving.
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[worker] Unhandled promise rejection (continuing):', reason);
 });
+process.on('uncaughtException', (err) => {
+  console.error('[worker] Uncaught exception (continuing):', err);
+});
+
+/**
+ * Keeps a loop running for the life of the process. Previously a throw that escaped either
+ * loop hit `Promise.all(...).catch(process.exit(1))` and took the whole worker down with it.
+ */
+async function supervise(name: string, loop: () => Promise<void>): Promise<void> {
+  while (!shuttingDown) {
+    try {
+      await loop();
+      if (!shuttingDown) console.error(`[worker] ${name} returned unexpectedly - restarting it.`);
+    } catch (err) {
+      console.error(`[worker] ${name} threw - restarting it in ${ERROR_BACKOFF_MS}ms:`, err);
+    }
+    if (!shuttingDown) await sleep(ERROR_BACKOFF_MS);
+  }
+}
+
+void Promise.all([supervise('jobLoop', jobLoop), supervise('heartbeatLoop', heartbeatLoop)]);
 
 process.on('SIGINT', () => {
   shuttingDown = true;

@@ -63,11 +63,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       lastSeenAt: heartbeat.lastSeenAt,
       reclaimableVramMb: heartbeat.reclaimableVramMb ?? undefined,
       error: 'Worker offline',
-      details: 'Last heartbeat was more than 15s ago - the PC or worker appears to be off.',
+      // The threshold moved to 30s when the heartbeat cadence was fixed; these strings still
+      // claimed 15s, which made the dashboard contradict the code it was describing. ComfyUI is
+      // named explicitly because it running is NOT sufficient - it never contacts the cloud, so
+      // only the local worker process can produce a heartbeat.
+      details:
+        'No heartbeat for over 30s. ComfyUI running is not enough - the local worker process is the only thing that reports in, so start it on your PC.',
       preflightCheck: {
         passed: false,
         recommendedMediaType: [],
-        warnings: ['Worker offline - last heartbeat was more than 15s ago.'],
+        warnings: ['Worker offline - the local worker process on your PC is not reporting in.'],
       },
     });
   }

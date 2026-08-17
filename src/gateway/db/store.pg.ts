@@ -146,8 +146,35 @@ export async function queryJobs(query: string, limit = 50): Promise<Job[]> {
  * 'queued'` guard means two concurrent claimers can never both walk away with the same row -
  * only matters if more than one worker is ever running, but it's the correct pattern either way.
  */
+/**
+ * A worker that dies mid-render leaves its job stuck in claimed/processing forever: claimNextJob
+ * only ever picks up 'queued' rows, so nothing can adopt it, and the dashboard polls a job that
+ * will never move again. This releases those back to the queue so the render actually happens.
+ *
+ * The window is deliberately far longer than any legitimate render. runJob's own absolute
+ * ceiling is 45 minutes, so anything claimed over an hour ago without reaching a terminal state
+ * cannot still be running - which means this can never steal a job from a live worker.
+ */
+const ORPHAN_RECLAIM_AFTER = '60 minutes';
+
+export async function requeueOrphanedJobs(): Promise<number> {
+  await ensureSchema();
+  const released = await db
+    .update(jobs)
+    .set({ status: 'queued', phase: null, percentage: 0, claimedAt: null, nodeTitle: 'Requeued after worker restart' })
+    .where(
+      sql`${jobs.status} IN ('claimed', 'processing')
+          AND ${jobs.claimedAt} IS NOT NULL
+          AND ${jobs.claimedAt} < now() - interval '${sql.raw(ORPHAN_RECLAIM_AFTER)}'`
+    )
+    .returning({ id: jobs.id });
+  return released.length;
+}
+
 export async function claimNextJob(): Promise<Job | null> {
   await ensureSchema();
+  // Self-healing: run before every claim so a stuck job is recovered without operator action.
+  await requeueOrphanedJobs();
   const claimed = await db
     .update(jobs)
     .set({ status: 'claimed', claimedAt: new Date().toISOString() })
