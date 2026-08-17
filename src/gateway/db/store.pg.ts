@@ -407,7 +407,11 @@ export async function upsertHeartbeat(data: {
   systemRamUsedMb?: number;
   systemRamTotalMb?: number;
   comfyOnline: boolean;
-  reclaimableVramMb?: number;
+  // Nullable, not merely optional: drizzle skips undefined keys, so leaving it out preserved the
+  // previous value. When ComfyUI goes down the last figure it reported is no longer true - and a
+  // stale one had the dashboard offering "RECLAIM 7.8 GB" against a ComfyUI that wasn't running
+  // and could not free a byte. Writing null actively clears it.
+  reclaimableVramMb?: number | null;
 }): Promise<void> {
   await ensureSchema();
   const now = new Date().toISOString();

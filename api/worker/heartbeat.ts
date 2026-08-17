@@ -35,7 +35,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     systemRamUsedMb: systemRamUsedMb != null ? Number(systemRamUsedMb) : undefined,
     systemRamTotalMb: systemRamTotalMb != null ? Number(systemRamTotalMb) : undefined,
     comfyOnline: Boolean(comfyOnline),
-    reclaimableVramMb: reclaimableVramMb != null ? Number(reclaimableVramMb) : undefined,
+    // null (clear it), not undefined (keep the old value) - see upsertHeartbeat. The worker
+    // reports this as absent whenever ComfyUI is unreachable, and "unknown" must not be
+    // rendered from a figure that was true minutes ago.
+    reclaimableVramMb: reclaimableVramMb != null ? Number(reclaimableVramMb) : null,
   });
 
   const { heartbeat } = await getHeartbeatStatus();

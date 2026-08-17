@@ -29,6 +29,9 @@ export function isRenderInFlight(stats: SystemStats | null): boolean {
 
 export function hasReclaimableVram(stats: SystemStats | null): boolean {
   if (!stats) return false;
+  // ComfyUI is the only process whose memory this app can release, so if it is not running there
+  // is nothing to reclaim by definition - regardless of what the last heartbeat happened to say.
+  if (stats.status !== 'ONLINE') return false;
   // Purging mid-render unloads the very weights the GPU is using and destroys the generation.
   // The worker refuses it locally and POST /api/free-vram refuses it cloud-side, so this is the
   // third layer - but it is the one that matters to the user, because the other two can only
