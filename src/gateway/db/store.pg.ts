@@ -440,6 +440,22 @@ export async function requestFreeVram(): Promise<{ accepted: boolean; reason?: s
     return { accepted: false, reason: 'A render is currently running - reclaiming VRAM now would kill it.' };
   }
 
+  // Only ComfyUI can release this memory, so a request it cannot possibly satisfy is refused
+  // rather than accepted. Previously the flag was set regardless, the worker's /free call failed
+  // silently against an unreachable ComfyUI, the request was marked handled, and the dashboard
+  // reported "purge signal sent" while nothing changed - so the button looked like it kept
+  // failing with no explanation.
+  const { online, heartbeat } = await getHeartbeatStatus();
+  if (!online) {
+    return { accepted: false, reason: 'Your PC is offline - there is nothing running to reclaim VRAM from.' };
+  }
+  if (!heartbeat?.comfyOnline) {
+    return {
+      accepted: false,
+      reason: 'ComfyUI is not reachable on your PC, so it cannot release any VRAM. Start ComfyUI and try again.',
+    };
+  }
+
   const now = new Date().toISOString();
   await db
     .insert(workerHeartbeat)

@@ -110,9 +110,15 @@ export function buildComfyUiWorkflow(params: WorkflowParams): Record<string, any
      * reinterpret it freely. 0.65 is a deliberate middle - enough to genuinely transform the
      * subject while keeping the original composition and pose recognisable.
      */
-    const [rw, rh] = roundToMultipleOf8(
+    // Bounded by a pixel budget, NOT the photo's native size. Using native dimensions meant a
+    // 3000x4000 phone photo (12 MP - about 11x a normal 1024x1024 render) went straight into
+    // VAEEncode, the sampler and VAEDecode on an 8 GB card. It did not error; it ground to a halt
+    // in the decode, which surfaced as "ComfyUI went silent for 6 minutes" at 95%. The aspect
+    // ratio is preserved so the framing still matches the photo the user uploaded.
+    const [rw, rh] = fitWithinPixelBudget(
       params.referenceImageWidth || width,
-      params.referenceImageHeight || height
+      params.referenceImageHeight || height,
+      MAX_IMG2IMG_PIXELS
     );
     const denoise = params.denoise ?? 0.65;
 
@@ -176,6 +182,29 @@ function roundToMultipleOf8(width: number, height: number): [number, number] {
   const rw = Math.max(64, Math.floor(width / 8) * 8);
   const rh = Math.max(64, Math.floor(height / 8) * 8);
   return [rw, rh];
+}
+
+/**
+ * Ceiling on img2img working resolution, matching what the text-to-image paths already use
+ * (1024x1024). SD-family VAE encode/decode and attention cost scale with pixel count, and 8 GB
+ * has no headroom above roughly this - a 12 MP phone photo passed through untouched is what
+ * stalled a render at 95%.
+ */
+const MAX_IMG2IMG_PIXELS = 1024 * 1024;
+
+/**
+ * Scales (w, h) down to fit `maxPixels` while preserving aspect ratio, then snaps to the
+ * multiple of 8 the latent pipeline requires. Images already within budget are only snapped,
+ * never upscaled - upscaling would invent detail and cost VRAM for nothing.
+ */
+export function fitWithinPixelBudget(width: number, height: number, maxPixels: number): [number, number] {
+  const w = Math.max(1, width);
+  const h = Math.max(1, height);
+  const pixels = w * h;
+  if (pixels <= maxPixels) return roundToMultipleOf8(w, h);
+
+  const scale = Math.sqrt(maxPixels / pixels);
+  return roundToMultipleOf8(Math.round(w * scale), Math.round(h * scale));
 }
 
 export function buildComfyWorkflow(params: WorkflowParams): {
