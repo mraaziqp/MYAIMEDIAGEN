@@ -1,6 +1,7 @@
 import React from 'react';
 import { Cpu, ShieldCheck, Radio, Sparkles, Terminal, Database, Sliders, Layers, Trash2 } from 'lucide-react';
 import { SystemStats } from '../types';
+import { hasReclaimableVram, reclaimTooltip } from '../lib/vramReclaim';
 
 interface NavbarProps {
   activeTab: string;
@@ -23,6 +24,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const vramPct = systemStats?.vramUsagePercent || 0;
   const freeVramGb = systemStats && isOnline ? (systemStats.vramFreeMb / 1024).toFixed(1) : null;
   const isLowVram = systemStats && isOnline ? systemStats.vramFreeMb < 3800 : false;
+  const hasReclaimable = isOnline && hasReclaimableVram(systemStats);
 
   return (
     <header className="sticky top-0 z-50 bg-slate-950/95 backdrop-blur-md border-b border-slate-800/80 text-slate-100 shadow-md">
@@ -161,17 +163,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                   {vramPct}%
                 </span>
 
-                {/* Quick Free VRAM button in header */}
-                {onFreeVram && (
+                {/* Quick Free VRAM button in header. Hidden entirely when there is nothing to
+                    reclaim - a header button has no room to explain itself, and an enabled one
+                    that frees nothing while forcing a cold model reload is worse than absent. */}
+                {onFreeVram && hasReclaimable && (
                   <button
                     onClick={onFreeVram}
                     disabled={isFreeingVram}
-                    className={`ml-1.5 px-2.5 py-1 rounded-lg transition-all text-xs font-bold flex items-center space-x-1 shadow active:scale-95 ${
+                    className={`ml-1.5 px-2.5 py-1 rounded-lg transition-all text-xs font-bold flex items-center space-x-1 shadow active:scale-95 disabled:opacity-50 ${
                       isLowVram
                         ? 'bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white animate-pulse ring-1 ring-rose-400/50'
                         : 'bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-white border border-slate-700'
                     }`}
-                    title="Unload models & clear PyTorch CUDA VRAM cache"
+                    title={reclaimTooltip(systemStats)}
                   >
                     <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
                     <span className="text-[10px] sm:text-[11px] font-bold">

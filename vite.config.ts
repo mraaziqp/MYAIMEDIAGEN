@@ -32,13 +32,25 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          // Real-time API routes (VRAM telemetry, generation status, SSE progress) must
-          // never be intercepted or cached - only the app shell is precached.
+          // Hashed build assets only - deliberately NOT index.html.
+          //
+          // Precaching the HTML pinned the asset hashes it referenced, so a client kept loading
+          // the previous bundle after a deploy even though the origin was serving a newer one
+          // (measured: page on index-DqKwsF71.js while the origin served index-DMVn-XXP.js).
+          // That is how stale UI survived several deploys. Letting the document always come
+          // from the network means a reload can never resolve to a superseded bundle.
+          globPatterns: ['**/*.{js,css,ico,png,svg,webmanifest}'],
+          // No offline document fallback, for the same reason: a cached shell would reintroduce
+          // the pinning. This is a cloud dashboard - it cannot do anything useful offline
+          // anyway, since telemetry, the job queue and the gallery all require the network.
+          navigateFallback: null,
+          // Real-time API routes (VRAM telemetry, generation status) must never be cached.
           navigateFallbackDenylist: [/^\/api/],
           // Take over immediately on update instead of waiting for every open tab of the
           // old version to close - this app changes often and should never run stale code.
           skipWaiting: true,
           clientsClaim: true,
+          cleanupOutdatedCaches: true,
         },
       }),
     ],

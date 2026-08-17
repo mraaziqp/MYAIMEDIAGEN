@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { upload } from '@vercel/blob/client';
 import { Sparkles, Zap, Video, Image, Shuffle, Ratio, Play, ShieldAlert, ImagePlus, X, Loader2, CheckCircle2, Trash2 } from 'lucide-react';
 import { MediaType, AspectRatio, WorkflowParams, SystemStats, DurationStat } from '../types';
+import { hasReclaimableVram, reclaimTooltip } from '../lib/vramReclaim';
 
 /** Read intrinsic pixel dimensions client-side - there's no server-side sharp step anymore
  *  now that uploads go straight from the browser to Blob storage (see handleFileSelect). */
@@ -495,11 +496,15 @@ export const GeneratorPanel: React.FC<GeneratorPanelProps> = ({
               </div>
             </div>
 
-            {onFreeVram && (
+            {/* Offered only when a purge would actually recover something - see lib/vramReclaim.
+                The worker reclaims automatically before rendering anyway, so this is a
+                convenience, never a requirement. */}
+            {onFreeVram && hasReclaimableVram(stats) && (
               <button
                 type="button"
                 onClick={onFreeVram}
                 disabled={isFreeingVram}
+                title={reclaimTooltip(stats)}
                 className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold rounded-xl text-xs shrink-0 flex items-center justify-center space-x-2 transition-all active:scale-95 disabled:opacity-50"
               >
                 <Trash2 className={`w-4 h-4 ${isFreeingVram ? 'animate-spin' : ''}`} />

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Cpu, Radio, RefreshCw, Terminal, Copy, Check, ShieldAlert, ShieldCheck, HardDrive, Trash2 } from 'lucide-react';
 import { SystemStats } from '../types';
+import { hasReclaimableVram, reclaimButtonLabel, reclaimTooltip } from '../lib/vramReclaim';
 
 interface WorkerStatusProps {
   stats: SystemStats | null;
@@ -22,7 +23,10 @@ export const WorkerStatus: React.FC<WorkerStatusProps> = ({
   isFreeingVram = false,
 }) => {
   const [copied, setCopied] = useState(false);
-  const startCommand = 'npx tsx worker/index.ts';
+  // The supervised entry point, not the bare worker: it restarts itself if it ever crashes,
+  // which is the difference between telemetry recovering on its own and it staying offline
+  // until somebody notices. `npm run worker` still exists for a one-off foreground run.
+  const startCommand = 'npm run worker:supervised';
 
   const handleCopy = () => {
     navigator.clipboard.writeText(startCommand);
@@ -51,14 +55,15 @@ export const WorkerStatus: React.FC<WorkerStatusProps> = ({
         </div>
 
         <div className="flex items-center space-x-2">
-          {onFreeVram && stats && isOnline && (
+          {onFreeVram && stats && isOnline && hasReclaimableVram(stats) && (
             <button
               onClick={onFreeVram}
               disabled={isFreeingVram}
+              title={reclaimTooltip(stats)}
               className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 text-white text-xs font-bold transition-all flex items-center space-x-2 shadow-md active:scale-95 disabled:opacity-50 ring-2 ring-rose-400/30"
             >
               <Trash2 className={`w-3.5 h-3.5 ${isFreeingVram ? 'animate-spin' : ''}`} />
-              <span>{isFreeingVram ? 'FREEING VRAM...' : 'FREE VRAM CACHE'}</span>
+              <span>{reclaimButtonLabel(stats, isFreeingVram)}</span>
             </button>
           )}
 

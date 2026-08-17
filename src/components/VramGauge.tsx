@@ -1,6 +1,7 @@
 import React from 'react';
 import { Cpu, AlertTriangle, ShieldCheck, ShieldAlert, Activity, HardDrive, Trash2, Sparkles } from 'lucide-react';
 import { SystemStats } from '../types';
+import { hasReclaimableVram, reclaimButtonLabel, reclaimTooltip } from '../lib/vramReclaim';
 
 interface VramGaugeProps {
   stats: SystemStats | null;
@@ -57,20 +58,9 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
 
   const preflight = stats.preflightCheck;
 
-  // ComfyUI's /free can only hand back what its own torch allocator is holding (loaded weights
-  // plus cache pool), which is what reclaimableVramMb measures - the rest of the GPU's used
-  // VRAM belongs to other processes and is untouchable. Below this threshold a purge is churn:
-  // it unloads models that will simply be re-read from disk on the next render, costing a cold
-  // load (~233s for Flux here) to recover a rounding error.
-  const RECLAIM_THRESHOLD_MB = 256;
-  // Undefined means the worker hasn't reported the figure (older worker, or ComfyUI
-  // unreachable). Unknown is not the same as zero, so allow the action rather than block on
-  // an absent measurement.
-  const hasReclaimable =
-    stats.reclaimableVramMb == null || stats.reclaimableVramMb >= RECLAIM_THRESHOLD_MB;
-  const reclaimTitle = hasReclaimable
-    ? 'Unload ComfyUI’s loaded models and purge its PyTorch CUDA cache, returning that VRAM to the GPU'
-    : 'ComfyUI is not currently holding any releasable VRAM - there is nothing a purge could free';
+  // Shared with every other FREE VRAM button in the app - see lib/vramReclaim.ts.
+  const hasReclaimable = hasReclaimableVram(stats);
+  const reclaimTitle = reclaimTooltip(stats);
 
   return (
     <div className="bg-slate-900/90 border border-slate-800/90 rounded-2xl p-5 sm:p-6 shadow-xl text-slate-100 relative overflow-hidden">
@@ -114,13 +104,7 @@ export const VramGauge: React.FC<VramGaugeProps> = ({
               {/* Naming the real figure is the point of the whole reclaimable measurement:
                   "RECLAIM 3.2 GB" is a promise the worker can keep, where a bare "FREE VRAM"
                   invited a purge that frees nothing whenever ComfyUI holds nothing. */}
-              <span className="tracking-wide">
-                {isFreeingVram
-                  ? 'FREEING VRAM...'
-                  : hasReclaimable
-                  ? `RECLAIM ${(stats.reclaimableVramMb! / 1024).toFixed(1)} GB`
-                  : 'NOTHING TO RECLAIM'}
-              </span>
+              <span className="tracking-wide">{reclaimButtonLabel(stats, isFreeingVram)}</span>
             </button>
           )}
 
