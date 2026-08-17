@@ -42,6 +42,13 @@ export const jobs = pgTable('jobs', {
   mediaUrl: text('media_url'),
   durationMs: integer('duration_ms').notNull().default(0),
   error: text('error'),
+  /**
+   * How many times this job has been dispatched. Used to bound automatic retries of transient
+   * infrastructure failures (ComfyUI restarting mid-render, a dropped WebSocket, a blob upload
+   * blip) so they self-heal instead of being terminal, without letting a genuinely broken job
+   * cycle forever.
+   */
+  attempts: integer('attempts').notNull().default(0),
   // Set by POST /api/jobs/:id/interrupt; the worker checks this on its next progress-report
   // round trip (it cannot be pushed to - it only ever polls out) and interrupts ComfyUI locally.
   interruptRequested: boolean('interrupt_requested').notNull().default(false),

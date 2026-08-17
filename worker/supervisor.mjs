@@ -60,6 +60,14 @@ function start() {
     child = null;
     if (stopping) return;
 
+    // Exit code 0 is a deliberate shutdown, not a crash - the worker uses it when another
+    // instance already holds the single-instance lock. Restarting would spin against a
+    // condition that will never resolve on its own.
+    if (code === 0) {
+      console.log(`[supervisor ${ts()}] worker exited cleanly (code 0) - not restarting.`);
+      process.exit(0);
+    }
+
     const ranForMs = Date.now() - startedAt;
     if (ranForMs >= HEALTHY_RUN_MS) backoffMs = MIN_BACKOFF_MS;
 

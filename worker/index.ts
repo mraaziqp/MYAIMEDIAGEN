@@ -1,6 +1,8 @@
 // Must run before any other import that reads process.env.* at module load time.
 import 'dotenv/config';
 
+import net from 'net';
+
 import { fetchNextJob, postHeartbeat } from './gatewayClient.js';
 import { runJob } from './runJob.js';
 import { getSystemStatsInternal, readGpuVram, noteVramPurged, GpuTelemetryError } from '../src/gateway/vramMonitor.js';
@@ -19,6 +21,36 @@ function sleep(ms: number): Promise<void> {
 }
 
 let isJobRunning = false;
+
+/**
+ * Refuses to start if another worker already is.
+ *
+ * Two workers polling the same queue is not a harmless duplicate: they claim DIFFERENT jobs
+ * (FOR UPDATE SKIP LOCKED guarantees they never take the same one) and then render both at once
+ * on a single 8 GB GPU, so each starves the other and both fail their preflight or OOM. It is an
+ * easy state to reach now that the autostart shortcut runs at every login while start-worker.bat
+ * is still there to be double-clicked.
+ *
+ * A listening socket is the lock rather than a PID file: acquisition is atomic, and the OS
+ * releases it when the process dies, so a crash or a hard kill can never leave a stale lock that
+ * blocks the next start.
+ */
+const SINGLE_INSTANCE_PORT = 47113;
+
+function acquireSingleInstanceLock(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (err: NodeJS.ErrnoException) => {
+      resolve(err.code !== 'EADDRINUSE');
+    });
+    server.once('listening', () => {
+      // Held for the lifetime of the process; unref so it never keeps Node alive by itself.
+      server.unref();
+      resolve(true);
+    });
+    server.listen(SINGLE_INSTANCE_PORT, '127.0.0.1');
+  });
+}
 
 /**
  * Cancels anything this app left running inside ComfyUI from a PREVIOUS worker process.
@@ -278,9 +310,22 @@ async function supervise(name: string, loop: () => Promise<void>): Promise<void>
 
 // Reconcile ComfyUI before claiming anything, so a leftover render from a previous process
 // cannot hold the GPU hostage against every job this one picks up.
-void cancelOrphanedComfyPrompts(COMFY_URL).finally(() => {
+void (async () => {
+  if (!(await acquireSingleInstanceLock())) {
+    console.error(
+      '[worker] Another worker is already running on this machine - exiting.\n' +
+        '         Two workers would render simultaneously on one GPU and starve each other.\n' +
+        '         Stop the other one first (or just use the one already running).'
+    );
+    // Clean exit, so the supervisor does not treat this as a crash and restart-loop against it.
+    process.exit(0);
+  }
+
+  // Reconcile ComfyUI before claiming anything, so a leftover render from a previous process
+  // cannot hold the GPU hostage against every job this one picks up.
+  await cancelOrphanedComfyPrompts(COMFY_URL);
   void Promise.all([supervise('jobLoop', jobLoop), supervise('heartbeatLoop', heartbeatLoop)]);
-});
+})();
 
 process.on('SIGINT', () => {
   shuttingDown = true;

@@ -1,4 +1,4 @@
-import WebSocket from 'ws';
+﻿import WebSocket from 'ws';
 import crypto from 'crypto';
 import { put } from '@vercel/blob';
 import { buildComfyUiWorkflow } from '../src/gateway/workflowMapper.js';
@@ -126,6 +126,46 @@ function describeNode(workflow: Record<string, any>, nodeId: string): { phase: J
 function scale(phase: JobPhase, fraction: number): number {
   const [lo, hi] = PHASE_BANDS[phase];
   return Math.round(lo + Math.max(0, Math.min(1, fraction)) * (hi - lo));
+}
+
+/**
+ * Reports a failure as transient (requeue and try again) or permanent (stop here).
+ *
+ * The distinction matters in both directions. Retrying a missing checkpoint or an OOM guardrail
+ * just burns GPU time to reach the same conclusion, while NOT retrying a dropped socket turns a
+ * ComfyUI restart into a permanently dead job - which is how a render that was seconds from
+ * finishing ended up needing to be resubmitted by hand.
+ */
+async function reportFailure(jobId: string, message: string): Promise<void> {
+  const transient = [
+    /websocket/i,
+    /ECONNREFUSED/i,
+    /ECONNRESET/i,
+    /socket hang up/i,
+    /fetch failed/i,
+    /network/i,
+    /close code 1006/i,
+    /went silent/i,
+    /Blob storage/i,
+    /HTTP 5\d\d/,
+  ].some((re) => re.test(message));
+
+  if (!transient) {
+    await cloud.postFail(jobId, message);
+    return;
+  }
+
+  try {
+    const { retried, attempts } = await cloud.postRetry(jobId, message);
+    console.log(
+      retried
+        ? `[worker] Transient failure on ${jobId} (attempt ${attempts}) - requeued: ${message}`
+        : `[worker] Transient failure on ${jobId} but attempt budget spent - failed: ${message}`
+    );
+  } catch {
+    // If the retry endpoint itself is unreachable, fail honestly rather than losing the job.
+    await cloud.postFail(jobId, message).catch(() => {});
+  }
 }
 
 function formatDuration(ms: number): string {
@@ -378,13 +418,13 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
     try {
       ws = new WebSocket(wsUrl);
     } catch (err: any) {
-      finalize(() => cloud.postFail(job.id, err?.message || `Failed to open WebSocket to ${wsUrl}`, false));
+      finalize(() => reportFailure(job.id, err?.message || `Failed to open WebSocket to ${wsUrl}`));
       return;
     }
 
     const abortRender = (reason: string) => {
       finalize(async () => {
-        await cloud.postFail(job.id, reason);
+        await reportFailure(job.id, reason);
         try {
           ws.close();
         } catch {}
@@ -437,7 +477,7 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
       } catch (err: any) {
         finalize(() => {
           ws.close();
-          return cloud.postFail(job.id, err?.message || 'Failed to submit workflow to ComfyUI');
+          return reportFailure(job.id, err?.message || 'Failed to submit workflow to ComfyUI');
         });
       }
     });
@@ -531,7 +571,7 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
                 const durationMs = Date.now() - startTime;
                 await cloud.postComplete(job.id, { mediaUrl: blob.url, durationMs, vramPeakMb: peakVramMb });
               } catch (err: any) {
-                await cloud.postFail(job.id, err?.message || 'Failed to upload generated media to Blob storage');
+                await reportFailure(job.id, err?.message || 'Failed to upload generated media to Blob storage');
               } finally {
                 ws.close();
               }
@@ -550,7 +590,7 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
     });
 
     ws.on('error', (err) => {
-      finalize(() => cloud.postFail(job.id, `ComfyUI WebSocket error: ${err.message}`));
+      finalize(() => reportFailure(job.id, `ComfyUI WebSocket error: ${err.message}`));
     });
 
     ws.on('close', (code) => {
@@ -563,3 +603,4 @@ export async function runJob(job: ClaimedJob, comfyUrl: string): Promise<void> {
     });
   });
 }
+

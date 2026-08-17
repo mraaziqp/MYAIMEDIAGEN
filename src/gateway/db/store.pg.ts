@@ -80,6 +80,7 @@ function ensureSchema(): Promise<void> {
       // added after the first deploy need their own idempotent ALTER - without this, an
       // existing `jobs` table would never gain `phase` and every write naming it would fail.
       await sqlClient`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS phase TEXT;`;
+      await sqlClient`ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;`;
       await sqlClient`
         ALTER TABLE worker_heartbeat
           ADD COLUMN IF NOT EXISTS reclaimable_vram_mb INTEGER,
@@ -224,7 +225,10 @@ export async function claimNextJob(): Promise<Job | null> {
   await requeueOrphanedJobs();
   const claimed = await db
     .update(jobs)
-    .set({ status: 'claimed', claimedAt: new Date().toISOString() })
+    // attempts increments on claim, not on failure, so a worker that dies without reporting
+    // anything still consumes its budget - otherwise a job that reliably kills the worker would
+    // be retried forever.
+    .set({ status: 'claimed', claimedAt: new Date().toISOString(), attempts: sql`${jobs.attempts} + 1` })
     .where(
       sql`${jobs.id} = (
         SELECT id FROM ${jobs}
@@ -290,6 +294,53 @@ export async function completeJob(
       completedAt: new Date().toISOString(),
     })
     .where(eq(jobs.id, id));
+}
+
+/**
+ * Maximum dispatches per job. 3 covers the realistic transient cases - ComfyUI restarting, a
+ * dropped socket, a blob hiccup - while still converging quickly if the cause is persistent.
+ */
+export const MAX_JOB_ATTEMPTS = 3;
+
+/**
+ * Returns a job to the queue after a TRANSIENT failure so it is retried automatically, or fails
+ * it permanently once the attempt budget is spent.
+ *
+ * Only the worker decides what is transient (see runJob's classifier) - a missing checkpoint or
+ * an OOM guardrail must never be retried, since repeating them just burns the GPU to reach the
+ * same conclusion. This exists because every failure used to be terminal: a ComfyUI restart
+ * mid-render permanently killed the job, which is precisely the kind of thing that should heal
+ * itself without the user noticing.
+ */
+export async function retryOrFailJob(
+  id: string,
+  error: string
+): Promise<{ retried: boolean; attempts: number }> {
+  await ensureSchema();
+  const [row] = await db.select({ attempts: jobs.attempts }).from(jobs).where(eq(jobs.id, id)).limit(1);
+  const attempts = row?.attempts ?? 0;
+
+  if (attempts >= MAX_JOB_ATTEMPTS) {
+    await failJob(id, { error: `${error} (gave up after ${attempts} attempts)`, status: 'failed' });
+    return { retried: false, attempts };
+  }
+
+  await db
+    .update(jobs)
+    .set({
+      status: 'queued',
+      phase: null,
+      percentage: 0,
+      step: null,
+      maxSteps: null,
+      etaSeconds: null,
+      elapsedMs: null,
+      claimedAt: null,
+      error: null,
+      nodeTitle: `Retrying after: ${error.slice(0, 120)}`,
+    })
+    .where(eq(jobs.id, id));
+  return { retried: true, attempts };
 }
 
 export async function failJob(

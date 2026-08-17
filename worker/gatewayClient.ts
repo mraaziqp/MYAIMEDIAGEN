@@ -65,6 +65,16 @@ export async function postComplete(
   if (!res.ok) throw new Error(`POST /api/worker/complete failed: HTTP ${res.status}`);
 }
 
+/**
+ * Reports a TRANSIENT failure - the cloud requeues the job if it has attempts left, otherwise
+ * fails it. Use postFail for anything a retry cannot fix.
+ */
+export async function postRetry(jobId: string, error: string): Promise<{ retried: boolean; attempts: number }> {
+  const res = await request('/api/worker/retry', { method: 'POST', body: JSON.stringify({ jobId, error }) });
+  if (!res.ok) throw new Error(`POST /api/worker/retry failed: HTTP ${res.status}`);
+  return res.json();
+}
+
 export async function postFail(jobId: string, error: string, interrupted = false): Promise<void> {
   const res = await request('/api/worker/fail', {
     method: 'POST',
