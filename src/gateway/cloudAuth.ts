@@ -57,9 +57,17 @@ function verifySessionCookieValue(value: string | undefined): boolean {
  * response) if the request should be rejected - callers just `if (rejectUnlessAuthed(...))
  * return;`.
  */
-export function rejectUnlessAuthed(req: VercelRequest, res: VercelResponse): boolean {
+/**
+ * Non-throwing session read, for callers that want to REPORT auth state rather than enforce it
+ * (see api/session.ts). Enforcement still goes through rejectUnlessAuthed below.
+ */
+export function isAuthed(req: VercelRequest): boolean {
   const cookies = parseCookieHeader(req.headers.cookie || '');
-  if (verifySessionCookieValue(cookies[SESSION_COOKIE_NAME])) return false;
+  return verifySessionCookieValue(cookies[SESSION_COOKIE_NAME]);
+}
+
+export function rejectUnlessAuthed(req: VercelRequest, res: VercelResponse): boolean {
+  if (isAuthed(req)) return false;
   res.status(401).json({ error: 'Not authenticated. Log in with the site password first.' });
   return true;
 }

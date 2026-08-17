@@ -14,8 +14,11 @@ export const LoginGate: React.FC<{ children: React.ReactNode }> = ({ children })
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
+    // Reads the body, not the status code: /api/session answers 200 either way now (see
+    // api/session.ts) so that an ordinary unauthenticated visit stops logging a console error.
     fetch('/api/session')
-      .then((res) => setStatus(res.ok ? 'authed' : 'unauthed'))
+      .then((res) => (res.ok ? res.json() : { authenticated: false }))
+      .then((data) => setStatus(data?.authenticated ? 'authed' : 'unauthed'))
       .catch(() => setStatus('unauthed'));
   }, []);
 
