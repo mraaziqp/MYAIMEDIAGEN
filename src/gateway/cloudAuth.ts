@@ -58,10 +58,6 @@ function verifySessionCookieValue(value: string | undefined): boolean {
  * return;`.
  */
 /**
- * Non-throwing session read, for callers that want to REPORT auth state rather than enforce it
- * (see api/session.ts). Enforcement still goes through rejectUnlessAuthed below.
- */
-/**
  * An app calling the API on its own (Agent Builder, Jarvis): `Authorization: Bearer <MEDIA_API_KEY>`.
  * The site password is a person's login and should not be handed to other software; a
  * separate key can be rotated or removed without touching it. Unset, no app can get in.
@@ -77,6 +73,10 @@ function hasAppKey(req: VercelRequest): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/**
+ * Non-throwing session read, for callers that want to REPORT auth state rather than enforce it
+ * (see api/session.ts). Enforcement still goes through rejectUnlessAuthed below.
+ */
 export function isAuthed(req: VercelRequest): boolean {
   if (hasAppKey(req)) return true;
   const cookies = parseCookieHeader(req.headers.cookie || '');
