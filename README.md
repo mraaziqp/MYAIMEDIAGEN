@@ -57,6 +57,8 @@ to work; the dashboard itself just reads whatever the worker last reported.
    - `SESSION_SECRET` - any long random string, signs the login cookie
    - `WORKER_TOKEN` - any long random string, the worker's own credential
    - `ENCRYPTION_SECRET` - any long random string, used for the vault's display-only prompt encryption
+   - `MEDIA_API_KEY` (optional) - lets other apps such as Agent Builder and Jarvis call the API with
+     `Authorization: Bearer <key>` (24+ random characters). Unset, only the site password works.
 4. Deploy: `vercel --prod`
 5. If you have existing history in a local `.data/gateway.sqlite3` from the legacy local server
    (see below), migrate it once: `npm run migrate:postgres` (needs `DATABASE_URL` in your local
